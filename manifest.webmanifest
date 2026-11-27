@@ -1,0 +1,16 @@
+{
+  "name": "Prep",
+  "short_name": "Prep",
+  "description": "Household emergency supplies: what you have, when it is due, and how long it lasts in each scenario.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eceeea",
+  "theme_color": "#14586b",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
