@@ -316,3 +316,5 @@ dialog { box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
 .dlg-foot .btn.small { white-space: nowrap; padding: 0 10px; min-height: 60px; }
 
 .dlg-foot .btn.small { line-height: 1.15; font-size: 13px; }
+
+.note.sug { margin-top: -6px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }

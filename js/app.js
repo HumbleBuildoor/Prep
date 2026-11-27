@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -561,6 +561,48 @@ async function markChecked(id) {
   toast('Marked as checked today.');
 }
 
+// ---------- where to keep a new item ----------
+// 1. A grab bag that an away-from-home scenario still needs it in, if the item suits a bag.
+// 2. Otherwise the place where most of the same kind is already kept.
+const BAG_MAX_G = 500;   // heaviest single pack suggested for a bag; a working limit, not a sourced figure
+function bagFit(v) {
+  const size = C.num(v.unitSize), light = size === null || v.unit === 'pcs' || size <= BAG_MAX_G;
+  switch (v.area) {
+    case 'food': return v.needsCooking || !light ? null : 'needs no cooking';
+    case 'water': { const l = C.num(v.cap); return l !== null && l <= 1.5 ? 'is small enough to carry' : null; }
+    case 'power': return v.type === 'powerbank' ? 'is portable' : null;
+    case 'medical': return 'is something to keep with you';
+    case 'hygiene': return ['wipes', 'soap', 'toiletpaper', 'sanitary'].includes(v.type) && light ? 'is light to carry' : null;
+    case 'pets': return (v.type === 'dogfood' || v.type === 'catfood') && light ? 'is light to carry' : null;
+    default: return null;   // fuel needs its stove, kit is placed by hand
+  }
+}
+function suggestLocation(v) {
+  const s = S.settings, items = live();
+  const fit = bagFit(v);
+  if (fit) {
+    for (const scn of S.scenarios) {
+      const bags = (Array.isArray(scn.locations) ? scn.locations : []).filter(l => s.locations.includes(l));
+      if (scn.place !== 'away' || !bags.length) continue;
+      if (v.area === 'pets' && scn.petsAlong === false) continue;
+      const r = C.evaluate(scn, items, s, today(), typeLabel), need = r.needs.find(n => n.id === v.area);
+      if (!need || (need.logged && need.days >= r.target)) continue;
+      const amountAt = loc => items.filter(i => i.area === v.area && i.location === loc).reduce((t, i) => t + (C.num(i.qty) || 0) * (v.area === 'food' ? C.num(i.kcal) || 0 : C.num(i.cap) || 1), 0);
+      const bag = bags.slice().sort((a, b) => amountAt(a) - amountAt(b))[0];
+      const state = need.logged ? `${fmtDays(need.days)} of ${r.target} days` : 'nothing logged';
+      return { loc: bag, why: `"${scn.name}" is short on ${need.name.toLowerCase()} (${state}), and this ${fit}.` };
+    }
+  }
+  const kind = i => (v.area === 'food' ? i.category === v.category : i.type === v.type);
+  for (const [test, label] of [[i => i.area === v.area && kind(i), v.area === 'food' ? v.category : typeLabel(v.area, v.type)], [i => i.area === v.area, areaOf(v.area).name]]) {
+    const count = new Map();
+    for (const i of items) if (test(i) && s.locations.includes(i.location)) count.set(i.location, (count.get(i.location) || 0) + 1);
+    const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (top) return { loc: top[0], why: `You keep most of the same kind here (${label}).` };
+  }
+  return null;
+}
+
 // ---------- add / edit item ----------
 function openItem(id, preset) {
   const s = S.settings;
@@ -575,6 +617,8 @@ function openItem(id, preset) {
   const calc = { k: '', p: '', w: '' };
   const open = { more: false, calc: false };
   let existing = [], pending = [], note = null, err = '', reading = false, areaTouched = !isNew || !!preset;
+  const baseLoc = v.location;
+  let locTouched = !isNew || (preset && preset.location !== undefined), locWhy = '';
   let capAuto = false, capTouched = !isNew || (preset && preset.cap !== undefined && preset.cap !== '');
   const showSize = () => !['water', 'power', 'medical', 'kit'].includes(v.area);   // for these the size says nothing the other fields do not
   // A new item starts as photo-only. The full form opens once a read comes back, or when typing by hand is chosen.
@@ -627,6 +671,11 @@ function openItem(id, preset) {
   function paint() {
     const a = areaOf(v.area);
     if (expanded) preCap();
+    if (expanded && isNew) {
+      const sug = suggestLocation(v);
+      if (!locTouched) v.location = sug ? sug.loc : baseLoc;
+      locWhy = !sug ? '' : sug.loc === v.location ? `Suggested: ${sug.loc}. ${sug.why}` : `Suggested instead: ${sug.loc}. ${sug.why}`;
+    }
     const types = v.area === 'food' ? s.foodCategories.map(c => ({ id: c, label: c })) : a.types;
     const tpl = isNew ? (TEMPLATES[v.area] || []) : [];
     const checks = `<div class="grid2">${N('i-checkm', 'Check or recharge every (months)', v.checkEveryMonths, 'step="1"')}
@@ -665,6 +714,7 @@ function openItem(id, preset) {
       ${F('i-name', 'Name', v.name)}
       <div class="grid2">${F('i-brand', 'Brand', v.brand)}${types.length > 1 ? SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : v.type) : ''}</div>
       <div class="grid2">${N('i-qty', 'How many you have', v.qty)}${SEL('i-loc', 'Location', s.locations.map(l => ({ id: l, label: l })), v.location)}</div>
+      ${locWhy ? `<p class="note sug" id="i-locwhy">${esc(locWhy)}</p>` : ''}
       <div class="grid2"><label class="f">${v.area === 'medical' ? 'Expiry date' : 'Best before or expiry'}<input id="i-bb" type="date" value="${esc(v.bestBefore)}"></label>
         ${showSize() ? `<div class="grid2 tight">${N('i-size', 'Size of one unit', v.unitSize)}${SEL('i-unit', 'Unit', [{ id: 'g', label: 'g' }, { id: 'ml', label: 'ml' }, { id: 'pcs', label: 'pcs' }], v.unit)}</div>` : ''}</div>
       <div class="grid2"><label class="f">Or just the month<select id="i-bbm">${opt('', 'Month', '')}${MON.map((m, k) => opt(String(k + 1), m, '')).join('')}</select></label>
@@ -884,9 +934,9 @@ function openItem(id, preset) {
       const t = e.target;
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
-      else if (t.id === 'i-type' && v.area !== 'food') { collect(); draw(); }
+      else if (t.id === 'i-loc') { locTouched = true; collect(); draw(); }
+      else if (t.id === 'i-type' || t.id === 'i-cook' || ((t.id === 'i-size' || t.id === 'i-unit' || t.id === 'i-cap') && isNew)) { collect(); draw(); }
       else if (['c-k', 'c-p', 'c-w'].includes(t.id)) { collect(); if (perPack()) { open.calc = true; draw(); } }
-      else if ((t.id === 'i-size' || t.id === 'i-unit') && v.area === 'hygiene') { collect(); draw(); }
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
         if (m && y) $('#i-bb', dlg).value = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;   // last day of that month
@@ -917,7 +967,7 @@ function openItem(id, preset) {
         if (!m) { toast('Enter the mAh figure.'); return; }
         collect(); v.cap = Math.round(m * 3.7 / 1000 * 0.85); v.basis = `${n0(m)} mAh × 3.7 V × 0.85 = ${v.cap} Wh (estimate; use the Wh on the label if there is one).`; draw();
       } else if (x === 'batch') {
-        const base = { ...orig, _batch: true, bestBefore: '', qty: 1, confirmed: false, thumb: '' };
+        const base = { ...orig, _batch: true, bestBefore: '', qty: 1, confirmed: true, thumb: '' };
         delete base.id; delete base.createdAt; delete base.updatedAt; delete base.countedAt;
         dlg.close(); openItem(null, base);
       } else if (x === 'del') {
