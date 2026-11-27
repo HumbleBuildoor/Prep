@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.8.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -568,13 +568,15 @@ function openItem(id, preset) {
   const isNew = !orig;
   const v = Object.assign({
     area: S.view === 'supplies' && S.f.area ? S.f.area : 'food', type: '', category: s.foodCategories[0] || '', name: '', brand: '',
-    location: s.locations[0] || '', qty: 1, confirmed: false, unitSize: '', unit: 'g', bestBefore: '', kcal: '', protein: '', source: '',
+    location: s.locations.includes(S.lastLoc) ? S.lastLoc : s.locations[0] || '', qty: 1, confirmed: true, unitSize: '', unit: 'g', bestBefore: '', kcal: '', protein: '', source: '',
     basis: '', needsCooking: false, cap: '', perDay: '', checkEveryMonths: '', lastChecked: '', minQty: '', barcode: '', notes: '', thumb: '',
   }, orig ? JSON.parse(JSON.stringify(orig)) : {}, preset || {});
   for (const k of ['unitSize', 'kcal', 'protein', 'cap', 'perDay', 'checkEveryMonths', 'minQty']) if (v[k] === null || v[k] === undefined) v[k] = '';
   const calc = { k: '', p: '', w: '' };
   const open = { more: false, calc: false };
   let existing = [], pending = [], note = null, err = '', reading = false, areaTouched = !isNew || !!preset;
+  let capAuto = false, capTouched = !isNew || (preset && preset.cap !== undefined && preset.cap !== '');
+  const showSize = () => !['water', 'power', 'medical', 'kit'].includes(v.area);   // for these the size says nothing the other fields do not
   // A new item starts as photo-only. The full form opens once a read comes back, or when typing by hand is chosen.
   let expanded = !isNew || !!preset, readAgain = false, alive = true;
   const removed = new Set(), urls = [];
@@ -594,7 +596,7 @@ function openItem(id, preset) {
     return `<label class="f">${label}<select id="${fid}">${options.map(o => opt(o.id, o.label, cur)).join('')}</select></label>`;
   };
   const HINT = {
-    water: 'A 1.5 L bottle is 1.5.',
+    water: 'A 1.5 L bottle is 1.5. A 500 ml bottle is 0.5.',
     fuel: 'Use the burn time for your own stove. Makers quote about 65 to 75 minutes for a 250 g can at full flame.',
     power: 'Use the Wh printed on the label if there is one.',
     medical: 'Regular medication counts toward a scenario only when you enter the doses taken a day.',
@@ -602,8 +604,29 @@ function openItem(id, preset) {
     pets: 'Use the feeding guide on the pack for your pet\'s weight. Litter and other items need no figure.',
   };
 
+  // What one unit gives: worked out where a sourced rule exists (soap), otherwise copied from the last item of the same kind.
+  function preCap() {
+    if (!isNew || capTouched || v.area === 'food' || v.area === 'kit') return;
+    if (capAuto) { v.cap = ''; v.basis = ''; capAuto = false; }
+    if (v.cap !== '') return;
+    const size = C.num(v.unitSize);
+    if (v.area === 'hygiene' && v.type === 'soap' && v.unit === 'g' && size) {
+      v.cap = Math.round(size / (250 / 30)); v.basis = `${size} g at 250 g per person per month = ${v.cap} days for one person.`; capAuto = true; return;
+    }
+    if (!['fuel', 'hygiene', 'pets'].includes(v.area)) return;
+    const last = live().filter(o => o.area === v.area && o.type === v.type && C.num(o.cap) !== null).sort((x, y) => String(y.updatedAt || '').localeCompare(String(x.updatedAt || '')))[0];
+    if (last) { v.cap = last.cap; v.basis = `Same as your last one (${last.name}). Change it if this one differs.`; capAuto = true; }
+  }
+
+  let drawing = false;
   function draw() {
+    if (drawing) return;            // replacing the form can fire a change event from the field that had focus
+    drawing = true;
+    try { paint(); } finally { drawing = false; }
+  }
+  function paint() {
     const a = areaOf(v.area);
+    if (expanded) preCap();
     const types = v.area === 'food' ? s.foodCategories.map(c => ({ id: c, label: c })) : a.types;
     const tpl = isNew ? (TEMPLATES[v.area] || []) : [];
     const checks = `<div class="grid2">${N('i-checkm', 'Check or recharge every (months)', v.checkEveryMonths, 'step="1"')}
@@ -640,13 +663,13 @@ function openItem(id, preset) {
         <div id="i-note">${note ? `<div class="banner ${note.cls}"><span>${esc(note.text)}</span></div>` : ''}</div></fieldset>
       ${expanded ? `      <div id="i-match"></div>
       ${F('i-name', 'Name', v.name)}
-      <div class="grid2">${F('i-brand', 'Brand', v.brand)}${SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : v.type)}</div>
+      <div class="grid2">${F('i-brand', 'Brand', v.brand)}${types.length > 1 ? SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : v.type) : ''}</div>
       <div class="grid2">${N('i-qty', 'How many you have', v.qty)}${SEL('i-loc', 'Location', s.locations.map(l => ({ id: l, label: l })), v.location)}</div>
       <div class="grid2"><label class="f">${v.area === 'medical' ? 'Expiry date' : 'Best before or expiry'}<input id="i-bb" type="date" value="${esc(v.bestBefore)}"></label>
-        <div class="grid2 tight">${N('i-size', 'Size of one unit', v.unitSize)}${SEL('i-unit', 'Unit', [{ id: 'g', label: 'g' }, { id: 'ml', label: 'ml' }, { id: 'pcs', label: 'pcs' }], v.unit)}</div></div>
+        ${showSize() ? `<div class="grid2 tight">${N('i-size', 'Size of one unit', v.unitSize)}${SEL('i-unit', 'Unit', [{ id: 'g', label: 'g' }, { id: 'ml', label: 'ml' }, { id: 'pcs', label: 'pcs' }], v.unit)}</div>` : ''}</div>
       <div class="grid2"><label class="f">Or just the month<select id="i-bbm">${opt('', 'Month', '')}${MON.map((m, k) => opt(String(k + 1), m, '')).join('')}</select></label>
         <label class="f">and year<select id="i-bby">${opt('', 'Year', '')}${Array.from({ length: 12 }, (_, k) => new Date().getFullYear() - 1 + k).map(y => opt(String(y), String(y), '')).join('')}</select></label></div>
-      <label class="c"><input id="i-conf" type="checkbox"${v.confirmed ? ' checked' : ''}><span>I counted this quantity myself</span></label>
+      ${orig && !orig.confirmed ? `<label class="c"><input id="i-conf" type="checkbox"${v.confirmed ? ' checked' : ''}><span>I have counted this quantity myself (it came from an import)</span></label>` : ''}
       ${special}
       ${checksUp ? `<fieldset><legend>Checks</legend>${checks}</fieldset>` : ''}
       <details id="i-more"${open.more ? ' open' : ''}><summary>More: minimum to keep, barcode, notes${checksUp ? '' : ', checks'}</summary><div class="grid2 gap-top">
@@ -761,6 +784,7 @@ function openItem(id, preset) {
       v.source = '';                                   // the person must confirm where the figures come from
     } else if (v.area === 'water') {
       if (o.litresPerUnit !== null) v.cap = o.litresPerUnit; else if (o.unit === 'ml' && o.unitSize) v.cap = o.unitSize / 1000;
+      if (v.cap !== '') capTouched = true;
     } else if (v.area === 'power') {
       if (o.wattHours !== null) { v.cap = o.wattHours; v.basis = 'Wh as printed on the label.'; }
       else if (o.mAh !== null) { v.cap = Math.round(o.mAh * 3.7 / 1000 * 0.85); v.basis = `${n0(o.mAh)} mAh × 3.7 V × 0.85 = ${v.cap} Wh (estimate; the label gave no Wh).`; }
@@ -823,7 +847,7 @@ function openItem(id, preset) {
     const item = Object.assign({}, orig || {}, {
       id: orig ? orig.id : uid(), area: v.area, type: v.area === 'food' ? '' : v.type, category: v.area === 'food' ? v.category : '',
       name: String(v.name).trim() || `Unnamed ${a.short.toLowerCase()} item`, brand: String(v.brand).trim(), location: v.location,
-      qty: round3(qty), confirmed: !!v.confirmed, unitSize: C.num(v.unitSize), unit: v.unit, bestBefore: v.bestBefore || '',
+      qty: round3(qty), confirmed: !!v.confirmed, unitSize: v.area === 'water' && C.num(v.cap) !== null ? C.num(v.cap) * 1000 : C.num(v.unitSize), unit: v.area === 'water' && C.num(v.cap) !== null ? 'ml' : v.unit, bestBefore: v.bestBefore || '',
       kcal: v.area === 'food' ? C.num(v.kcal) : null, protein: v.area === 'food' ? C.num(v.protein) : null,
       source: v.area === 'food' ? v.source : '', basis: v.basis || '', needsCooking: v.area === 'food' && !!v.needsCooking,
       cap: v.area === 'food' || v.area === 'kit' ? null : C.num(v.cap), perDay: v.area === 'medical' ? C.num(v.perDay) : null,
@@ -840,6 +864,7 @@ function openItem(id, preset) {
       await commit(item, isNew ? 'ADD' : 'EDIT', isNew ? item.qty : item.qty - (C.num(orig.qty) || 0));
     });
     if (!ok) { if (btn) btn.disabled = false; return; }
+    S.lastLoc = item.location;
     dlg.close(); refresh(); toast('Saved.');
     if (S.persisted === null || S.persisted === false) keepStorage();
   }
@@ -857,11 +882,8 @@ function openItem(id, preset) {
       const t = e.target;
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
-      else if ((t.id === 'i-size' || t.id === 'i-unit') && v.area === 'water') {
-        // Water: the litres follow from the pack size, so nobody has to type the same thing twice.
-        const size = C.num($('#i-size', dlg).value), cap = $('#i-cap', dlg);
-        if (cap && size && $('#i-unit', dlg).value === 'ml' && (cap.value === '' || cap.dataset.auto)) { cap.value = String(size / 1000); cap.dataset.auto = '1'; }
-      }
+      else if (t.id === 'i-type' && v.area !== 'food') { collect(); draw(); }
+      else if ((t.id === 'i-size' || t.id === 'i-unit') && v.area === 'hygiene') { collect(); draw(); }
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
         if (m && y) $('#i-bb', dlg).value = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;   // last day of that month
@@ -874,7 +896,7 @@ function openItem(id, preset) {
         if (!isNew && orig.source === 'LABEL' && (String($('#i-kcal', dlg).value) !== origK || String($('#i-prot', dlg).value) !== origP))
           dlg.querySelectorAll('[name=i-src]').forEach(r => { r.checked = false; });
         kwarn();
-      } else if (t.id === 'i-cap') { v.basis = ''; const b = $('#i-basis', dlg); if (b) b.textContent = ''; }
+      } else if (t.id === 'i-cap') { capTouched = true; capAuto = false; v.basis = ''; const b = $('#i-basis', dlg); if (b) b.textContent = ''; }
       else if (t.id === 'i-name' || t.id === 'i-brand' || t.id === 'i-bar') match();
     };
     dlg.onclick = e => {
