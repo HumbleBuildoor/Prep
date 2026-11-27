@@ -255,7 +255,9 @@ export function gaps(scenarios, items, s, today, labelOf) {
       }
     }
   }
-  return [...out.values()].sort((a, b) => b.scenarios.length - a.scenarios.length || a.needName.localeCompare(b.needName));
+  // Most scenarios first; ties go in order of urgency: water, then food, fuel, power, medical, hygiene, pets.
+  const rank = id => { const i = ['water', 'food', 'fuel', 'power', 'medical', 'hygiene', 'pets'].indexOf(id); return i < 0 ? 99 : i; };
+  return [...out.values()].sort((a, b) => b.scenarios.length - a.scenarios.length || rank(a.need) - rank(b.need) || a.label.localeCompare(b.label));
 }
 
 /** Plain totals of what is in stock, ignoring scenarios. */

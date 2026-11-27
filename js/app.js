@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.6.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -222,20 +222,24 @@ function scenarioView(scn, r) {
   const logged = r.needs.filter(n => n.logged), unlogged = r.needs.filter(n => !n.logged);
   let lim = null;
   for (const n of logged) if (!lim || n.days < lim.days) lim = n;
-  let cls, verdict;
-  if (!r.needs.length) { cls = 'ok'; verdict = 'Nothing needs stocking for this one.'; }
-  else if (!logged.length) { cls = 'none'; verdict = 'Nothing logged for this yet.'; }
-  else if (lim.days < r.target) {
-    cls = lim.days / r.target >= 0.5 ? 'short' : 'bad';
+  const v = { cls: 'ok', days: null, ratio: 1, limit: '', unlogged, covered: false };
+  if (!r.needs.length) { v.limit = 'Nothing to stock'; v.covered = true; return v; }
+  if (!logged.length) { v.cls = 'none'; v.ratio = 0; v.limit = 'Not logged: ' + unlogged.map(n => areaOf(n.id).short).join(', '); return v; }
+  v.days = lim.days; v.ratio = r.target > 0 ? Math.min(1, lim.days / r.target) : 1;
+  if (lim.days < r.target) {
+    v.cls = v.ratio >= 0.5 ? 'short' : 'bad';
     const many = lim.lines.filter(l => l.essential !== false).length > 1;
-    verdict = `Limited by <b>${esc(lim.name)}${many && lim.limit ? ' (' + esc(lim.limit.label.toLowerCase()) + ')' : ''}</b>: ${fmtDays(lim.days)} of ${r.target} days`;
-  } else { cls = unlogged.length ? 'short' : 'ok'; verdict = unlogged.length ? `What is logged covers ${r.target} days.` : `Covered for ${r.target} days.`; }
-  const chip = n => {
-    if (!n.logged) return `<span class="need n-none">${esc(areaOf(n.id).short)} <b>not logged</b></span>`;
-    const c = n.days >= r.target ? 'ok' : n.days >= r.target / 2 ? 'short' : 'bad';
-    return `<span class="need n-${c}">${esc(areaOf(n.id).short)} <b>${fmtDays(n.days)}</b></span>`;
-  };
-  return { cls, verdict, chips: r.needs.map(chip).join(''), unlogged };
+    v.limit = lim.name + (many && lim.limit ? ' (' + lim.limit.label.toLowerCase() + ')' : '');
+  } else if (unlogged.length) { v.cls = 'short'; v.limit = 'Covered so far'; }
+  else { v.limit = 'Covered'; v.covered = true; }
+  if (unlogged.length) v.limit += ' · not logged: ' + unlogged.map(n => areaOf(n.id).short).join(', ');
+  return v;
+}
+
+function ring(ratio, cls, big) {
+  const R = 27, C_ = 2 * Math.PI * R, on = Math.max(0, Math.min(1, ratio)) * C_;
+  return `<svg class="ring r-${cls}" viewBox="0 0 64 64" aria-hidden="true"><circle class="track" cx="32" cy="32" r="${R}"/>
+    ${on > 0.5 ? `<circle class="arc" cx="32" cy="32" r="${R}" stroke-dasharray="${on.toFixed(1)} ${C_.toFixed(1)}" transform="rotate(-90 32 32)"/>` : ''}</svg><span class="ring-n">${big}</span>`;
 }
 
 function gapAmount(g) {
@@ -251,38 +255,41 @@ function gapAmount(g) {
 function viewReady() {
   const s = S.settings, items = live(), t = C.totals(items);
   const hh = [plural(s.adults, 'adult'), s.dogs ? plural(s.dogs, 'dog') : '', s.cats ? plural(s.cats, 'cat') : ''].filter(Boolean).join(', ');
-  let h = `<div class="ration"><div class="seg" role="group" aria-label="Ration level">
+  const views = S.scenarios.map(scn => ({ scn, v: scenarioView(scn, C.evaluate(scn, items, s, today(), typeLabel)) }));
+  const covered = views.filter(x => x.v.covered).length;
+  const gs = C.gaps(S.scenarios, items, s, today(), typeLabel);
+  const gapName = g => esc(g.needName) + (g.label && g.label !== g.needName && !['water', 'fuel', 'power'].includes(g.need) ? ': ' + esc(g.label) : '');
+  const gapRow = g => `<li><span class="g-what"><b>${gapName(g)}</b><small>short in ${g.scenarios.length} of ${S.scenarios.length} scenarios</small></span><span class="g-amt">${esc(gapAmount(g))}</span></li>`;
+  const heroCls = !S.scenarios.length || covered === S.scenarios.length ? 'ok' : covered === 0 ? 'bad' : 'short';
+
+  let h = `<section class="hero h-${heroCls}"><div class="hero-ring">${ring(S.scenarios.length ? covered / S.scenarios.length : 1, 'hero', `${covered}<small>/${S.scenarios.length}</small>`)}</div>
+      <div class="hero-text"><div class="eyebrow">Scenarios covered</div>
+        <div class="hero-line">${gs.length ? `Fix next: <b>${gapName(gs[0])}</b>, ${esc(gapAmount(gs[0]))}` : 'Everything you have logged covers every scenario.'}</div>
+        <div class="hero-sub">${esc(hh)}</div></div></section>
+    <div class="ration"><div class="seg" role="group" aria-label="Ration level">
       <button data-act="ration" data-v="survival" aria-pressed="${s.rationLevel !== 'standard'}">Survival ${n0(s.kcalSurvival)}</button>
       <button data-act="ration" data-v="standard" aria-pressed="${s.rationLevel === 'standard'}">Standard ${n0(s.kcalStandard)}</button></div>
-    <span class="note">kcal per adult a day · ${esc(hh)}</span></div>`;
+      ${items.some(i => i.area === 'food') ? '<button class="btn" data-act="meals">Plan meals</button>' : ''}</div>`;
   if (!items.length) {
-    h += `<div class="card"><h2>Start here</h2><p class="note">Add your first item with a photo of the pack, or bring in a backup file. Each scenario below fills in as you log what you have.</p>
+    h += `<div class="card"><h2>Start here</h2><p class="note">Add your first item with a photo of the pack, or bring in a backup file.</p>
       <div class="actions start"><button class="btn primary" data-act="add">Add item</button><a class="btn" href="#more">Import a backup</a></div></div>`;
   }
-  h += '<h2 class="sect">Scenarios</h2><ul class="rows">' + S.scenarios.map(scn => {
-    const v = scenarioView(scn, C.evaluate(scn, items, s, today(), typeLabel));
-    return `<li class="row scn s-${v.cls}"><button class="row-main col" data-act="scn" data-id="${esc(scn.id)}">
-      <span class="scn-head"><span class="nm">${esc(scn.name)}</span><span class="target">${plural(scn.days, 'day')}</span></span>
-      <span class="verdict">${v.verdict}</span>${v.chips ? `<span class="chips">${v.chips}</span>` : ''}</button></li>`;
-  }).join('') + `</ul><div class="actions start"><button class="btn small" data-act="scn-new">Add scenario</button></div>`;
+  h += '<ul class="tilegrid">' + views.map(({ scn, v }) =>
+    `<li><button class="scn t-${v.cls}" data-act="scn" data-id="${esc(scn.id)}"><span class="ringbox">${ring(v.ratio, v.cls, v.days === null ? '–' : fmtDays(v.days))}</span>
+      <span class="t-of">of ${plural(scn.days, 'day')}</span><span class="t-name">${esc(scn.name)}</span><span class="t-lim">${esc(v.limit)}</span></button></li>`).join('') +
+    `<li><button class="scn t-add" data-act="scn-new"><span class="t-plus" aria-hidden="true">+</span><span class="t-name">Add scenario</span></button></li></ul>`;
 
-  if (items.some(i => i.area === 'food')) {
-    h += `<div class="card"><h2>Meals from your stock</h2><p class="note">Builds breakfast, lunch, dinner and a snack from what you have, oldest first, to your ration and protein targets.</p>
-      <div class="actions start"><button class="btn primary" data-act="meals">Plan meals</button></div></div>`;
+  if (gs.length) {
+    h += `<div class="card"><h2>Fix next</h2><ul class="gaps">${gs.slice(0, 3).map(gapRow).join('')}</ul>` +
+      (gs.length > 3 ? `<details class="more"><summary>Show all ${gs.length}</summary><ul class="gaps">${gs.slice(3).map(gapRow).join('')}</ul></details>` : '') + '</div>';
   }
-  const gs = C.gaps(S.scenarios, items, s, today(), typeLabel);
-  h += `<div class="card"><h2>To cover every scenario</h2>` + (gs.length ? `<ul class="gaps">` + gs.map(g =>
-    `<li><span class="g-what"><b>${esc(g.needName)}${g.label && g.label !== g.needName && g.need !== 'water' && g.need !== 'fuel' && g.need !== 'power' ? ': ' + esc(g.label) : ''}</b>
-      <small>short in ${g.scenarios.length} of ${S.scenarios.length} scenarios, most in "${esc(g.worst)}"</small></span><span class="g-amt">${esc(gapAmount(g))}</span></li>`).join('') + '</ul>'
-    : '<p class="note">Every scenario is covered by what you have logged.</p>') + '</div>';
-
   const jump = (label, n, f) => `<a href="#supplies" data-jump="${f}"><span>${label}</span><b>${n}</b></a>`;
-  h += `<div class="card"><h2>In stock</h2><div class="tiles">
+  h += `<details class="card"><summary><h2>In stock</h2></summary><div class="tiles">
       <div class="tile"><div class="n">${n1(t.water)} L</div><div class="l">water</div></div>
       <div class="tile"><div class="n">${n0(t.kcal)}</div><div class="l">kcal of food, ${n0(t.protein)} g protein</div></div>
       <div class="tile"><div class="n">${n0(t.fuel)} min</div><div class="l">cooking flame</div></div>
       <div class="tile"><div class="n">${n0(t.power)} Wh</div><div class="l">stored power</div></div></div>
-    <div class="attn">${jump('Items logged', t.rows, 'st=')}${jump('Need details', t.drafts, 'st=draft')}${jump('Nutrition is an estimate', t.estimates, 'st=estimate')}${jump('Quantity not counted', t.uncounted, 'st=uncounted')}</div></div>`;
+    <div class="attn">${jump('Items logged', t.rows, 'st=')}${jump('Need details', t.drafts, 'st=draft')}${jump('Nutrition is an estimate', t.estimates, 'st=estimate')}${jump('Quantity not counted', t.uncounted, 'st=uncounted')}</div></details>`;
   return h;
 }
 
@@ -429,7 +436,7 @@ function renderBanner() {
   if (S.updateReady) h += '<div class="banner info"><span>A new version is ready.</span><button class="btn small" data-act="apply-update">Update now</button></div>';
   const days = S.lastBackupAt ? C.daysLeft(today(), S.lastBackupAt.slice(0, 10)) : null;
   if (live().length >= 5 && (days === null || days > 30)) {
-    h += `<div class="banner warn"><span>${days === null ? 'No backup yet.' : `Last backup was ${days} days ago.`} Your data is only on this phone.</span><a class="btn small" href="#more">Back up</a></div>`;
+    h += `<a class="backupnote" href="#more">${days === null ? 'No backup yet' : `Last backup ${days} days ago`} · back up</a>`;
   }
   b.innerHTML = h;
 }
