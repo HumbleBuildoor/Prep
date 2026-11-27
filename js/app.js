@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -152,6 +152,34 @@ function download(text, name, type) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+// ---------- icons ----------
+const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${extra}>${d}</svg>`;
+const AREA_ICON = {
+  water: '<path d="M12 3s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11z"/>',
+  food: '<path d="M7 3v18M4.5 3v4.5a2.5 2.5 0 0 0 5 0V3M17 21V3c-2.2 1.6-3 4.6-3 7.5 0 1.6 1.2 2.5 3 2.5"/>',
+  fuel: '<path d="M12 3c.6 3.6 5 5.2 5 10.2a5 5 0 0 1-10 0c0-2 .9-3.4 2-4.4.2 1.8 1 2.8 2 3 .2-3-.6-5.4 1-8.8z"/>',
+  power: '<path d="M13 2 5 14h6l-1 8 8-12h-6z"/>',
+  medical: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M12 8v8M8 12h8"/>',
+  hygiene: '<path d="M10 3h4v3h-4zM8 9a3 3 0 0 1 3-3h2a3 3 0 0 1 3 3v10a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2zM8 13h8"/>',
+  pets: '<circle cx="6.5" cy="11" r="1.6"/><circle cx="10" cy="6.8" r="1.6"/><circle cx="14" cy="6.8" r="1.6"/><circle cx="17.5" cy="11" r="1.6"/><path d="M12 12c-2.6 0-4.6 2.3-4.6 4.4 0 1.7 1.5 2.6 2.9 2.2.9-.3 2.5-.3 3.4 0 1.4.4 2.9-.5 2.9-2.2 0-2.1-2-4.4-4.6-4.4z"/>',
+  kit: '<rect x="3.5" y="8" width="17" height="11.5" rx="2"/><path d="M9 8V5.5h6V8M3.5 13h17"/>',
+};
+const areaIcon = id => svg(AREA_ICON[id] || AREA_ICON.kit);
+const CAMERA = '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/>';
+const FILTER = '<path d="M4 6h16M7 12h10M10 18h4"/>';
+
+// Which folded sections are open, remembered for the session so a save or redraw does not close them.
+const OPEN = new Set(['backup']);
+try { const o = sessionStorage.getItem('prep.open'); if (o !== null) { OPEN.clear(); o.split(',').filter(Boolean).forEach(x => OPEN.add(x)); } } catch (e) { /* storage not available */ }
+document.addEventListener('toggle', e => {
+  const k = e.target.dataset && e.target.dataset.open;
+  if (!k) return;
+  if (e.target.open) OPEN.add(k); else OPEN.delete(k);
+  try { sessionStorage.setItem('prep.open', [...OPEN].join(',')); } catch (x) { /* ignore */ }
+}, true);
+const fold = (key, title, state, body, tag = 'div', attrs = '') =>
+  `<details class="card fold2" data-open="${key}"${OPEN.has(key) ? ' open' : ''}><summary><h2>${title}</h2><span class="state">${state || ''}</span></summary><${tag} class="fold-body"${attrs}>${body}</${tag}></details>`;
+
 // ---------- item display ----------
 function dueInfo(it) {
   const due = C.nextDue(it);
@@ -195,22 +223,17 @@ function isLow(it) {
 }
 
 function rowHTML(it) {
-  const di = dueInfo(it), miss = C.missing(it), a = areaOf(it.area);
-  const thumb = it.thumb ? `<img class="thumb" alt="" src="${esc(it.thumb)}">` : `<span class="thumb" aria-hidden="true">${esc(a.short.charAt(0))}</span>`;
-  const size = C.num(it.unitSize) !== null ? `${n1(it.unitSize)} ${it.unit || ''}` : '';
-  const kind = it.area === 'food' ? it.category : typeLabel(it.area, it.type);
-  const meta = [it.brand, size, it.location].filter(Boolean).map(esc).join(' · ');
-  const line2 = [di.text, capText(it)].filter(Boolean).map(esc).join(' · ');
-  const chips = [
-    `<span class="pill p-area">${esc(a.short)}${kind ? ' · ' + esc(kind) : ''}</span>`,
-    di.label ? `<span class="pill p-${di.cls}">${esc(di.label)}</span>` : '',
-    it.area === 'food' && C.num(it.kcal) !== null ? sourcePill(it.source) : '',
+  const di = dueInfo(it), miss = C.missing(it), q = C.num(it.qty) || 0;
+  const thumb = it.thumb ? `<img class="thumb" alt="" src="${esc(it.thumb)}">` : `<span class="thumb a-${esc(it.area)}">${areaIcon(it.area)}</span>`;
+  const flags = [
     miss.length ? '<span class="pill p-draft">Needs details</span>' : '',
-    isLow(it) ? `<span class="pill p-expired">${(C.num(it.qty) || 0) === 0 ? 'Out' : 'Low'}</span>` : '',
+    isLow(it) ? `<span class="pill p-expired">${q === 0 ? 'Out' : 'Low'}</span>` : '',
+    it.area === 'food' && C.num(it.kcal) !== null && !['LABEL', 'ONLINE', 'GENERIC'].includes(it.source) ? '<span class="pill p-estimate">Estimate</span>' : '',
   ].join('');
+  const meta = [di.text ? `<span class="d-${di.cls}">${esc(di.text)}</span>` : '', it.location ? esc(it.location) : ''].filter(Boolean).join(' · ');
   return `<li class="row s-${di.cls || 'plain'}"><button class="row-main" data-act="edit" data-id="${esc(it.id)}">${thumb}
-    <span class="row-text"><span class="nm">${esc(it.name)}</span>${meta ? `<span class="mt">${meta}</span>` : ''}${line2 ? `<span class="mt">${line2}</span>` : ''}<span class="chips">${chips}</span></span></button>
-    <div class="row-qty"><b>${esc(n1(C.num(it.qty) || 0))}</b><small>in stock</small><button class="btn small" data-act="use" data-id="${esc(it.id)}">Use / add</button></div></li>`;
+    <span class="row-text"><span class="nm">${esc(it.name)}</span>${meta ? `<span class="mt">${meta}</span>` : ''}${flags ? `<span class="chips">${flags}</span>` : ''}</span></button>
+    <button class="qty" data-act="use" data-id="${esc(it.id)}" aria-label="${esc(n1(q))} in stock. Use or add"><b>${esc(n1(q))}</b><small>use / add</small></button></li>`;
 }
 
 const opt = (v, label, cur) => `<option value="${esc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${esc(label)}</option>`;
@@ -232,7 +255,7 @@ function scenarioView(scn, r) {
     v.limit = lim.name + (many && lim.limit ? ' (' + lim.limit.label.toLowerCase() + ')' : '');
   } else if (unlogged.length) { v.cls = 'short'; v.limit = 'Covered so far'; }
   else { v.limit = 'Covered'; v.covered = true; }
-  if (unlogged.length) v.limit += ' · not logged: ' + unlogged.map(n => areaOf(n.id).short).join(', ');
+  if (unlogged.length) v.limit += ` · ${unlogged.length} not logged`;
   return v;
 }
 
@@ -284,12 +307,12 @@ function viewReady() {
       (gs.length > 3 ? `<details class="more"><summary>Show all ${gs.length}</summary><ul class="gaps">${gs.slice(3).map(gapRow).join('')}</ul></details>` : '') + '</div>';
   }
   const jump = (label, n, f) => `<a href="#supplies" data-jump="${f}"><span>${label}</span><b>${n}</b></a>`;
-  h += `<details class="card"><summary><h2>In stock</h2></summary><div class="tiles">
+  h += `<details class="card fold2" data-open="stock"${OPEN.has('stock') ? ' open' : ''}><summary><h2>In stock</h2><span class="state">${plural(t.rows, 'item')}</span></summary><div class="fold-body"><div class="tiles">
       <div class="tile"><div class="n">${n1(t.water)} L</div><div class="l">water</div></div>
       <div class="tile"><div class="n">${n0(t.kcal)}</div><div class="l">kcal of food, ${n0(t.protein)} g protein</div></div>
       <div class="tile"><div class="n">${n0(t.fuel)} min</div><div class="l">cooking flame</div></div>
       <div class="tile"><div class="n">${n0(t.power)} Wh</div><div class="l">stored power</div></div></div>
-    <div class="attn">${jump('Items logged', t.rows, 'st=')}${jump('Need details', t.drafts, 'st=draft')}${jump('Nutrition is an estimate', t.estimates, 'st=estimate')}${jump('Quantity not counted', t.uncounted, 'st=uncounted')}</div></details>`;
+    <div class="attn">${jump('Items logged', t.rows, 'st=')}${jump('Need details', t.drafts, 'st=draft')}${jump('Nutrition is an estimate', t.estimates, 'st=estimate')}${jump('Quantity not counted', t.uncounted, 'st=uncounted')}</div></div></details>`;
   return h;
 }
 
@@ -319,13 +342,16 @@ function filtered() {
 
 function viewSupplies() {
   const f = S.f, s = S.settings, list = filtered(), total = live().length;
-  const chip = (id, label) => `<button class="chip" data-act="area" data-v="${id}" aria-pressed="${f.area === id}">${esc(label)}</button>`;
-  return `<div class="chiprow" role="group" aria-label="Area">${chip('', 'All')}${AREAS.map(a => chip(a.id, a.short)).join('')}</div>
-    <div class="filters"><input type="search" id="f-q" data-f="q" placeholder="Search name, brand or notes" value="${esc(f.q)}" aria-label="Search">
+  const chip = (id, label) => `<button class="chip" data-act="area" data-v="${id}" aria-pressed="${f.area === id}">${id ? areaIcon(id) : ''}${esc(label)}</button>`;
+  const active = (f.loc ? 1 : 0) + (f.st ? 1 : 0) + (f.sort && f.sort !== 'due' ? 1 : 0), open = f.open || active > 0;
+  return `<div class="searchrow"><input type="search" id="f-q" data-f="q" placeholder="Search ${total} items" value="${esc(f.q)}" aria-label="Search">
+      <button class="btn icon${active ? ' on' : ''}" data-act="filters" aria-expanded="${open}" aria-label="Filters and sorting">${svg(FILTER)}${active ? `<b>${active}</b>` : ''}</button></div>
+    <div class="chiprow" role="group" aria-label="Area">${chip('', 'All')}${AREAS.map(a => chip(a.id, a.short)).join('')}</div>
+    <div class="filters"${open ? '' : ' hidden'}>
       <select id="f-loc" data-f="loc" aria-label="Location">${opt('', 'All locations', f.loc)}${s.locations.map(l => opt(l, l, f.loc)).join('')}</select>
       <select id="f-st" data-f="st" aria-label="Status">${opt('', 'Any status', f.st)}${opt('expired', 'Past date or check overdue', f.st)}${opt('eatfirst', 'Use first', f.st)}${opt('soon', 'Soon', f.st)}${opt('nodate', 'No date', f.st)}${opt('low', 'Low or out', f.st)}${opt('draft', 'Needs details', f.st)}${opt('uncounted', 'Quantity not counted', f.st)}${opt('estimate', 'Nutrition is an estimate', f.st)}${opt('notlabel', 'Nutrition not from the label', f.st)}</select>
       <select id="f-sort" data-f="sort" aria-label="Sort">${opt('due', 'Due first', f.sort)}${opt('name', 'Name', f.sort)}${opt('recent', 'Recently changed', f.sort)}</select></div>
-    <p class="note">${list.length} of ${total} items</p>
+    ${list.length !== total || !total ? `<p class="note">${list.length} of ${total} items</p>` : `<p class="note vh">${list.length} of ${total} items</p>`}
     ${list.length ? '<ul class="rows">' + list.map(rowHTML).join('') + '</ul>' : `<p class="empty">${total ? 'Nothing matches these filters.' : 'No items yet. Tap Add item to log the first one.'}</p>`}`;
 }
 
@@ -346,9 +372,11 @@ function viewDue() {
       buckets[b].push({ it, d, ...e });
     }
   }
-  const row = e => `<li class="row s-${e.d < 0 ? 'expired' : e.d < s.eatFirstDays ? 'eatfirst' : e.d < s.soonDays ? 'soon' : 'ok'}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
-      <span class="row-text"><span class="nm">${esc(e.it.name)}</span><span class="mt">${esc(e.kind)} ${esc(fdate(e.date))} · ${esc(dayWords(e.d))} · ${esc(e.it.location || '')}</span></span></button>
-      ${e.check ? `<div class="row-qty"><button class="btn small" data-act="checked" data-id="${esc(e.it.id)}">Checked</button></div>` : `<div class="row-qty"><b>${esc(n1(C.num(e.it.qty) || 0))}</b><small>in stock</small></div>`}</li>`;
+  const tone = d => d < 0 ? 'expired' : d < s.eatFirstDays ? 'eatfirst' : d < s.soonDays ? 'soon' : 'ok';
+  const row = e => `<li class="row s-${tone(e.d)}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
+      <span class="daybox d-${tone(e.d)}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
+      <span class="row-text"><span class="nm">${esc(e.it.name)}</span><span class="mt">${esc(e.kind)} ${esc(fdate(e.date))}${e.check ? '' : ' · ' + esc(n1(C.num(e.it.qty) || 0)) + ' in stock'}${e.it.location ? ' · ' + esc(e.it.location) : ''}</span></span></button>
+      ${e.check ? `<button class="qty" data-act="checked" data-id="${esc(e.it.id)}"><b>✓</b><small>checked</small></button>` : ''}</li>`;
   const sect = (title, arr) => arr.length ? `<h2 class="sect">${esc(title)} (${arr.length})</h2><ul class="rows">${arr.sort((a, b) => a.d - b.d).map(row).join('')}</ul>` : '';
   const any = Object.values(buckets).some(a => a.length);
   return sect('Overdue', buckets.over) + sect('Next 30 days', buckets.d30) + sect(`Within ${s.eatFirstDays} days`, buckets.first) +
@@ -359,59 +387,66 @@ function viewDue() {
 }
 
 // ---------- view: Log ----------
+const ACT = { ADD: 'Added', USE: 'Used', RESTOCK: 'Restocked', EDIT: 'Edited', CHECK: 'Checked', DELETE: 'Deleted', IMPORT: 'Imported' };
 function viewLog() {
-  const f = S.f, types = ['ADD', 'USE', 'RESTOCK', 'EDIT', 'CHECK', 'DELETE', 'IMPORT'];
+  const f = S.f;
   const rows = S.events.filter(e => !f.act || e.type === f.act).slice(0, 400);
-  return `<div class="filters"><select id="f-act" data-f="act" aria-label="Action">${opt('', 'All actions', f.act)}${types.map(t => opt(t, t, f.act)).join('')}</select></div>` +
-    (rows.length ? `<div class="card"><div class="scroll"><table><thead><tr><th>When</th><th>Action</th><th>Item</th><th>Change</th><th>Left</th></tr></thead><tbody>${rows.map(e => {
-      const d = new Date(e.at);
-      const when = isNaN(d) ? e.at : d.toLocaleString('en-MY', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      return `<tr><td>${esc(when)}</td><td>${esc(e.type)}</td><td>${esc(e.item)}</td><td>${e.delta > 0 ? '+' : ''}${esc(val(e.delta))}</td><td>${esc(val(e.qtyAfter))}</td></tr>`;
-    }).join('')}</tbody></table></div><p class="note">Newest first. Showing up to 400 entries.</p></div>`
-      : '<p class="empty">No entries yet. Adding, using, restocking, editing and checking items are recorded here.</p>');
+  if (!rows.length && !f.act) return '<p class="empty">No entries yet. Adding, using, restocking, editing and checking items are recorded here.</p>';
+  let h = `<div class="filters"><select id="f-act" data-f="act" aria-label="Action">${opt('', 'All actions', f.act)}${Object.keys(ACT).map(t => opt(t, ACT[t], f.act)).join('')}</select></div>`, day = '';
+  if (!rows.length) return h + '<p class="empty">Nothing of that kind yet.</p>';
+  for (const e of rows) {
+    const d = new Date(e.at), ok = !isNaN(d);
+    const k = ok ? d.toLocaleDateString('en-MY', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : String(e.at);
+    if (k !== day) { h += (day ? '</ul>' : '') + `<h2 class="sect small">${esc(k)}</h2><ul class="log">`; day = k; }
+    const dl = C.num(e.delta) || 0;
+    h += `<li><span class="l-what"><b>${esc(e.item)}</b><small>${esc(ACT[e.type] || e.type)}${ok ? ' · ' + esc(d.toLocaleTimeString('en-MY', { hour: 'numeric', minute: '2-digit' })) : ''}</small></span>
+      <span class="l-num"><b class="${dl > 0 ? 'up' : dl < 0 ? 'down' : ''}">${dl > 0 ? '+' : ''}${dl ? esc(val(e.delta)) : ''}</b><small>${esc(val(e.qtyAfter))} left</small></span></li>`;
+  }
+  return h + '</ul><p class="note">Newest first, up to 400 entries.</p>';
 }
 
 // ---------- view: More ----------
 function viewMore() {
   const s = S.settings;
   const N = (id, label, value, step) => `<label class="f">${label}<input id="${id}" type="number" inputmode="decimal" step="${step || 'any'}" min="0" value="${esc(val(value))}"></label>`;
-  const keyState = S.apiKey ? `A key is saved on this phone (ends in ${esc(S.apiKey.slice(-4))}).` : 'No key saved.';
-  const backup = S.lastBackupAt ? `Last backup: ${esc(fdate(S.lastBackupAt.slice(0, 10)))}.` : 'No backup made yet.';
+  const save = '<div class="actions"><button class="btn primary" type="submit">Save</button></div>';
+  const hh = [plural(s.adults, 'adult'), s.dogs ? plural(s.dogs, 'dog') : '', s.cats ? plural(s.cats, 'cat') : ''].filter(Boolean).join(', ');
+  const backupState = S.lastBackupAt ? esc(fdate(S.lastBackupAt.slice(0, 10))) : '<span class="d-eatfirst">None yet</span>';
   const persisted = S.persisted === null ? 'not known on this browser' : S.persisted ? 'yes' : 'not yet';
-  return `<form class="card" id="set-form"><h2>Household and rules</h2><div class="grid2">
-      ${N('s-adults', 'Adults', s.adults, 1)}${N('s-dogs', 'Dogs', s.dogs, 1)}${N('s-cats', 'Cats', s.cats, 1)}
-      ${N('s-ksurv', 'Survival ration, kcal per adult', s.kcalSurvival, 1)}${N('s-kstd', 'Standard ration, kcal per adult', s.kcalStandard, 1)}${N('s-kact', 'On the move, kcal per adult', s.kcalActive, 1)}
-      ${N('s-prot', 'Protein, g per adult a day', s.proteinPerDay, 1)}${N('s-water', 'Water, litres per person a day', s.waterPerPerson)}${N('s-petw', 'Water, litres per pet a day', s.petWaterEach)}
-      ${N('s-flame', 'Cooking flame, minutes a day', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh a day', s.powerWhPerDay, 1)}
-      ${N('s-oil', 'Oil counts for at most (% of calories)', Math.round(s.oilCap * 100), 1)}${N('s-sweet', 'Sweeteners count for at most (%, 0 = no cap)', Math.round(s.sweetCap * 100), 1)}
-      ${N('s-eat', 'Use first under (days)', s.eatFirstDays, 1)}${N('s-soon', 'Soon under (days)', s.soonDays, 1)}</div>
-      <label class="c"><input id="s-protlim" type="checkbox"${s.proteinLimits !== false ? ' checked' : ''}><span>Protein can limit the days of food</span></label>
-      <label class="c"><input id="s-expired" type="checkbox"${s.countExpired ? ' checked' : ''}><span>Count stock that is past its best-before date (medicine past expiry never counts)</span></label>
-      <div class="grid2"><label class="f">Locations, one per line<textarea id="s-locs" rows="6">${esc(s.locations.join('\n'))}</textarea></label>
-      <label class="f">Food categories, one per line<textarea id="s-fcats" rows="6">${esc(s.foodCategories.join('\n'))}</textarea></label></div>
-      <p class="note">Oil is the category named "${esc(s.oilCategory)}" and sweeteners the one named "${esc(s.sweetCategory)}".</p>
-      <div class="actions"><button class="btn primary" type="submit">Save</button></div></form>
-
-    <form class="card" id="key-form"><h2>Reading labels from photos</h2>
-      <p class="note">With your own Anthropic API key, Claude reads the pack from your photos and fills in the form for you to check. The key is stored only on this phone. Photos and the key are sent to Anthropic when you tap Read label, and nowhere else. Anyone who can unlock this phone could copy the key, so use one made for this app with a spend limit.</p>
-      <p class="note" id="key-state">${keyState}</p>
-      <label class="f">API key<input id="k-key" class="secret" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sk-ant-…"></label>
-      <label class="f">Model<select id="k-model">${MODELS.map(m => opt(m.id, m.label, s.apiModel)).join('')}</select></label>
-      <div class="actions">${S.apiKey ? '<button class="btn danger" type="button" data-act="key-remove">Remove key</button><button class="btn" type="button" data-act="key-test">Test</button>' : ''}<button class="btn primary" type="submit">Save</button></div></form>
-
-    <div class="card"><h2>Backup</h2>
-      <p class="note">Everything is stored on this phone only. A backup file is your copy if the phone is lost, and the way to move data to another device. ${backup}</p>
+  return fold('backup', 'Backup', backupState, `
+      <p class="note">Your data lives only on this phone. A backup file is your copy if the phone is lost, and how you move to another device.</p>
       <label class="c"><input id="b-photos" type="checkbox"><span>Include photos (a much larger file)</span></label>
       <div class="actions start"><button class="btn primary" data-act="backup">Save a backup file</button>
-        <label class="btn" for="b-file">Import a backup file</label><input class="vh" id="b-file" type="file" accept=".json,application/json">
-        <button class="btn" data-act="csv">Export food list for Excel</button></div>
-      <p class="note">Protected from automatic clean-up by the browser: ${persisted}.</p></div>
+        <label class="btn small" for="b-file">Import a backup</label><input class="vh" id="b-file" type="file" accept=".json,application/json">
+        <button class="btn small" data-act="csv">Food list for Excel</button></div>
+      <p class="note">Protected from automatic clean-up by the browser: ${persisted}.</p>`) +
 
-    <details class="card"><summary><h2>Where the default figures come from</h2></summary><ul class="sources">${SOURCES.map(x =>
-      `<li><b>${esc(x.what)}</b><span>${esc(x.why)}</span>${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.from)}</a>` : `<i>${esc(x.from)}</i>`}</li>`).join('')}</ul></details>
+    `<form id="set-form" class="stack">` +
+    fold('house', 'Household', esc(hh), `<div class="grid3">${N('s-adults', 'Adults', s.adults, 1)}${N('s-dogs', 'Dogs', s.dogs, 1)}${N('s-cats', 'Cats', s.cats, 1)}</div>${save}`) +
+    fold('rules', 'Rations and rules', `${n0(s.kcalSurvival)} / ${n0(s.kcalStandard)} kcal`, `<h3>Per adult, a day</h3><div class="grid2">
+        ${N('s-ksurv', 'Survival, kcal', s.kcalSurvival, 1)}${N('s-kstd', 'Standard, kcal', s.kcalStandard, 1)}${N('s-kact', 'On the move, kcal', s.kcalActive, 1)}${N('s-prot', 'Protein, g', s.proteinPerDay, 1)}</div>
+      <h3>Water, fuel and power, a day</h3><div class="grid2">
+        ${N('s-water', 'Water per person, L', s.waterPerPerson)}${N('s-petw', 'Water per pet, L', s.petWaterEach)}${N('s-flame', 'Cooking flame, min', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh', s.powerWhPerDay, 1)}</div>
+      <h3>What counts</h3><div class="grid2">
+        ${N('s-oil', 'Oil, at most % of kcal', Math.round(s.oilCap * 100), 1)}${N('s-sweet', 'Sweeteners, at most % (0 = no cap)', Math.round(s.sweetCap * 100), 1)}
+        ${N('s-eat', 'Use first under, days', s.eatFirstDays, 1)}${N('s-soon', 'Soon under, days', s.soonDays, 1)}</div>
+      <label class="c"><input id="s-protlim" type="checkbox"${s.proteinLimits !== false ? ' checked' : ''}><span>Protein can limit the days of food</span></label>
+      <label class="c"><input id="s-expired" type="checkbox"${s.countExpired ? ' checked' : ''}><span>Count stock that is past its best-before date (medicine past expiry never counts)</span></label>${save}`) +
+    fold('lists', 'Locations and categories', `${s.locations.length} / ${s.foodCategories.length}`, `<div class="grid2"><label class="f">Locations, one per line<textarea id="s-locs" rows="6">${esc(s.locations.join('\n'))}</textarea></label>
+      <label class="f">Food categories, one per line<textarea id="s-fcats" rows="6">${esc(s.foodCategories.join('\n'))}</textarea></label></div>
+      <p class="note">Oil is the category named "${esc(s.oilCategory)}" and sweeteners the one named "${esc(s.sweetCategory)}".</p>${save}`) + '</form>' +
 
-    <div class="card"><h2>About</h2><p class="note">Prep ${APP_VERSION}. Works without a connection once installed.</p>
-      <div class="actions start">${S.installEvt ? '<button class="btn primary" data-act="install">Install on this phone</button>' : ''}<button class="btn" data-act="update">Check for an update</button></div></div>`;
+    fold('key', 'Reading labels', S.apiKey ? `Key ends ${esc(S.apiKey.slice(-4))}` : '<span class="d-eatfirst">No key</span>', `
+      <p class="note">With your own Anthropic API key, Claude reads the pack from your photos and fills in the form for you to check. The key stays on this phone. Photos and the key go to Anthropic only when you tap Read label. Use a key made for this app, with a spend limit.</p>
+      <label class="f">API key<input id="k-key" class="secret" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${S.apiKey ? 'Saved. Paste a new one to replace it' : 'sk-ant-…'}"></label>
+      <label class="f">Model<select id="k-model">${MODELS.map(m => opt(m.id, m.label, s.apiModel)).join('')}</select></label>
+      <div class="actions">${S.apiKey ? '<button class="btn danger" type="button" data-act="key-remove">Remove key</button><button class="btn" type="button" data-act="key-test">Test</button>' : ''}<button class="btn primary" type="submit">Save</button></div>`, 'form', ' id="key-form"') +
+
+    fold('sources', 'Where the figures come from', `${SOURCES.length} sources`, `<ul class="sources">${SOURCES.map(x =>
+      `<li><b>${esc(x.what)}</b><span>${esc(x.why)}</span>${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.from)}</a>` : `<i>${esc(x.from)}</i>`}</li>`).join('')}</ul>`) +
+
+    `<div class="card"><div class="aboutrow"><p class="note">Prep ${APP_VERSION} · works offline once installed</p>
+      <div class="actions">${S.installEvt ? '<button class="btn primary small" data-act="install">Install</button>' : ''}<button class="btn small" data-act="update">Check for update</button></div></div></div>`;
 }
 
 const VIEWS = { ready: viewReady, supplies: viewSupplies, due: viewDue, log: viewLog, more: viewMore };
@@ -424,6 +459,9 @@ function render() {
   document.querySelectorAll('#nav a').forEach(l => {
     if (l.getAttribute('href') === '#' + S.view) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current');
   });
+  const dueSoon = live().filter(it => { const di = dueInfo(it); return di.days !== null && di.days < 30 && ((C.num(it.qty) || 0) > 0 || it.area === 'kit'); }).length;
+  const dn = document.querySelector('#nav a[href="#due"]');
+  if (dn) { if (dueSoon) dn.dataset.badge = dueSoon > 99 ? '99+' : String(dueSoon); else delete dn.dataset.badge; }
   if (id) {
     const e = document.getElementById(id);
     if (e) { e.focus(); if (pos !== null) try { e.setSelectionRange(pos, pos); } catch (x) { /* ignore */ } }
@@ -598,8 +636,7 @@ function openItem(id, preset) {
         <div class="actions start"><input class="vh" id="i-cam" type="file" accept="image/*" capture="environment">
           <label class="btn" for="i-gal">Choose photos</label><input class="vh" id="i-gal" type="file" accept="image/*" multiple>
           <button class="btn primary" type="button" data-x="read" id="i-read">Read label</button></div>
-        <p class="note">${S.apiKey ? 'Tap the camera button at the bottom right for up to 3 photos: front of pack, nutrition panel, date. Then tap Read label and the form opens, filled in for you to check. Photos go to Anthropic with your key. Unreadable fields are left blank, never guessed.'
-          : 'Tap the camera button at the bottom right. Up to 3 photos. To have Claude read the label, add your API key under More. Without it, type the details, now or later.'}</p>
+        <p class="note">${S.apiKey ? 'Up to 3 photos: front, nutrition panel, date. Then tap Read label.' : 'Up to 3 photos. Add an API key under More to have labels read for you.'}</p>
         <div id="i-note">${note ? `<div class="banner ${note.cls}"><span>${esc(note.text)}</span></div>` : ''}</div></fieldset>
       ${expanded ? `      <div id="i-match"></div>
       ${F('i-name', 'Name', v.name)}
@@ -607,8 +644,8 @@ function openItem(id, preset) {
       <div class="grid2">${N('i-qty', 'How many you have', v.qty)}${SEL('i-loc', 'Location', s.locations.map(l => ({ id: l, label: l })), v.location)}</div>
       <div class="grid2"><label class="f">${v.area === 'medical' ? 'Expiry date' : 'Best before or expiry'}<input id="i-bb" type="date" value="${esc(v.bestBefore)}"></label>
         <div class="grid2 tight">${N('i-size', 'Size of one unit', v.unitSize)}${SEL('i-unit', 'Unit', [{ id: 'g', label: 'g' }, { id: 'ml', label: 'ml' }, { id: 'pcs', label: 'pcs' }], v.unit)}</div></div>
-      <div class="grid2"><label class="f">Pack shows only month and year? Pick the month<select id="i-bbm">${opt('', 'Month', '')}${MON.map((m, k) => opt(String(k + 1), m, '')).join('')}</select></label>
-        <label class="f">and the year<select id="i-bby">${opt('', 'Year', '')}${Array.from({ length: 12 }, (_, k) => new Date().getFullYear() - 1 + k).map(y => opt(String(y), String(y), '')).join('')}</select></label></div>
+      <div class="grid2"><label class="f">Or just the month<select id="i-bbm">${opt('', 'Month', '')}${MON.map((m, k) => opt(String(k + 1), m, '')).join('')}</select></label>
+        <label class="f">and year<select id="i-bby">${opt('', 'Year', '')}${Array.from({ length: 12 }, (_, k) => new Date().getFullYear() - 1 + k).map(y => opt(String(y), String(y), '')).join('')}</select></label></div>
       <label class="c"><input id="i-conf" type="checkbox"${v.confirmed ? ' checked' : ''}><span>I counted this quantity myself</span></label>
       ${special}
       ${checksUp ? `<fieldset><legend>Checks</legend>${checks}</fieldset>` : ''}
@@ -616,9 +653,9 @@ function openItem(id, preset) {
         ${N('i-min', 'Minimum to keep (flags it as low below this)', v.minQty)}${F('i-bar', 'Barcode number', v.barcode, 'inputmode="numeric"')}</div>
         ${checksUp ? '' : `<div class="gap-top">${checks}</div>`}
         <label class="f gap-top">Notes<textarea id="i-notes">${esc(v.notes)}</textarea></label></details>` : `<div class="actions start"><button class="btn" type="button" data-x="manual">Type the details in by hand</button></div>`}
-      <div class="fabwrap"><label class="fab" for="i-cam"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Photo</span></label></div>
       <div id="i-err">${err ? `<div class="banner bad"><span>${esc(err)}</span></div>` : ''}</div>
-      <div class="actions">${isNew ? '' : '<button class="btn danger" type="button" data-x="del">Delete</button><button class="btn" type="button" data-x="batch">New batch</button>'}<button class="btn primary" type="submit" id="i-save">Save</button></div></form>`;
+      <div class="dlg-foot">${isNew ? '' : '<button class="btn danger small" type="button" data-x="del">Delete</button><button class="btn small" type="button" data-x="batch">New batch</button>'}<button class="btn primary grow" type="submit" id="i-save">Save</button>
+        <label class="fab" for="i-cam">${svg(CAMERA, ' width="28" height="28"')}<span>Photo</span></label></div></form>`;
     paintPhotos(); kwarn(); match();
   }
 
@@ -873,16 +910,23 @@ function openScenario(id) {
   if (!scn) return;
   const s = S.settings, r = C.evaluate(scn, live(), s, today(), typeLabel);
   const away = scn.place === 'away';
-  const cond = [away ? 'Away from home' : 'At home', scn.tap && !away ? 'tap water works' : 'no tap water', scn.grid && !away ? 'mains power works' : 'no mains power',
-    scn.shops && !away ? 'shops open' : 'no shops', `${n0(scenarioKcal(scn))} kcal per adult a day`];
+  const yn = (on, label) => `<span class="cond ${on ? 'on' : 'off'}">${on ? '✓' : '✕'} ${label}</span>`;
+  const cond = `<span class="cond">${esc(plural(scn.days, 'day'))}</span><span class="cond">${away ? 'Away from home' : 'At home'}</span>` + yn(scn.tap && !away, 'Tap water') + yn(scn.grid && !away, 'Mains power') + yn(scn.shops && !away, 'Shops') +
+    `<span class="cond">${n0(scenarioKcal(scn))} kcal per adult</span>`;
   const where = away ? (scn.locations && scn.locations.length ? 'Counting only: ' + scn.locations.join(', ') + '.' : 'No locations chosen, so everything is counted. Edit the scenario to pick the bags.') : '';
   let rows = '';
   for (const n of r.needs) {
-    rows += `<tr class="grp"><th colspan="3">${esc(n.name)}</th><th>${n.logged ? fmtDays(n.days) + ' of ' + r.target + ' days' : 'not logged'}</th></tr>`;
+    const ratio = n.logged && r.target > 0 ? Math.min(1, n.days / r.target) : 0;
+    const cls = !n.logged ? 'none' : n.days >= r.target ? 'ok' : ratio >= 0.5 ? 'short' : 'bad';
+    rows += `<section class="needblock nb-${cls}"><div class="nb-head"><span class="thumb sm a-${esc(n.id)}">${areaIcon(n.id)}</span><h3>${esc(n.name)}</h3>
+      <span class="nb-days">${n.logged ? `<b>${fmtDays(n.days)}</b> of ${r.target} days` : 'not logged'}</span></div>
+      <div class="bar"><i style="width:${(ratio * 100).toFixed(1)}%"></i></div><ul>`;
     for (const l of n.lines) {
       const uses = l.unit === 'person-days' ? plural(n1(l.perDay), 'person') : l.unit === 'pet-days' ? plural(n1(l.perDay), 'pet') : amount(l.perDay, l.unit) + ' a day';
-      rows += `<tr><td>${esc(l.label)}${l.essential === false ? ' <small>(not counted)</small>' : ''}</td><td>${esc(amount(l.have, l.unit))}</td><td>${esc(uses)}</td><td>${fmtDays(l.days)} days</td></tr>`;
+      const have = l.unit === 'person-days' || l.unit === 'pet-days' ? (l.have ? 'in stock' : 'none logged') : amount(l.have, l.unit);
+      rows += `<li><span>${esc(l.label)}${l.essential === false ? ' <small>(not counted)</small>' : ''}<small>${esc(have)} · ${esc(uses)}</small></span><b>${fmtDays(l.days)} days</b></li>`;
     }
+    rows += '</ul></section>';
   }
   const notes = [];
   const food = r.needs.find(n => n.id === 'food');
@@ -895,8 +939,8 @@ function openScenario(id) {
   }
   openDlg(() => {
     dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>${esc(scn.name)}</h2><button class="btn small" data-x="close">Close</button></div>
-      <p class="note">${esc(plural(scn.days, 'day'))} · ${esc(cond.join(' · '))}. ${esc(where)}</p>
-      ${r.needs.length ? `<div class="scroll"><table><thead><tr><th>Need</th><th>You have</th><th>Uses</th><th>Lasts</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="note">With water, power and shops all working, nothing needs stocking.</p>'}
+      <div class="conds">${cond}</div>${where ? `<p class="note">${esc(where)}</p>` : ''}
+      ${r.needs.length ? rows : '<p class="note">With water, power and shops all working, nothing needs stocking.</p>'}
       ${notes.map(t => `<p class="note">${esc(t)}</p>`).join('')}
       <div class="actions"><button class="btn" data-x="edit">Edit scenario</button></div></div>`;
     dlg.onclick = e => {
@@ -1083,6 +1127,7 @@ document.addEventListener('click', async e => {
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
     case 'area': S.f.area = b.dataset.v; render(); break;
+    case 'filters': S.f.open = !(S.f.open || S.f.loc || S.f.st || (S.f.sort && S.f.sort !== 'due')); if (!S.f.open) Object.assign(S.f, { loc: '', st: '', sort: 'due' }); render(); break;
     case 'ration': S.settings.rationLevel = b.dataset.v; await guard(saveSettings); render(); break;
     case 'backup': await guard(() => exportBackup($('#b-photos').checked)); break;
     case 'csv': download(C.foodCSV(S.items, S.settings, today()), `food-inventory-${today()}.csv`, 'text/csv'); toast('Food list saved to your downloads.'); break;
