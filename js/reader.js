@@ -31,7 +31,8 @@ export function blobToBase64(blob) {
   });
 }
 
-export function buildPrompt(area, categories) {
+export function buildPrompt(area, categories, types) {
+  const kinds = Object.entries(types || {}).filter(([a]) => !area || a === area).map(([a, list]) => a + ': ' + list.map(t => `"${t.id}" (${t.label})`).join(', ')).join('; ');
   return [
     'You are reading photos of ONE household supply item for an emergency-supplies tracker. The owner lives in Malaysia, where dates on packs are usually written day/month/year.',
     'Report only what is legibly printed on the item. Never estimate, infer or recall a value from memory: if something is not printed and readable, give null. If a date shows only a month and a year, use the last day of that month.',
@@ -44,6 +45,7 @@ export function buildPrompt(area, categories) {
     '- bestBefore: the best-before, use-by or expiry date as YYYY-MM-DD',
     '- barcode: the digits printed under the barcode',
     '- notes: one short line about anything unclear, for example which fields were unreadable or that energy was converted from kJ',
+    kinds ? '- type: for an item that is not food, the kind of item: exactly one of the ids listed for its area, or null if none fits. ' + kinds : '',
     'For food also give:',
     '- category: exactly one of ' + (categories || []).join(' | '),
     '- kcalPer100: energy in kcal per 100 g or 100 ml as printed (if only kJ is printed, convert with kcal = kJ / 4.184)',
@@ -55,7 +57,7 @@ export function buildPrompt(area, categories) {
     '- drainedWeight: in g, only if a drained weight is printed',
     '- needsCooking: true if the pack says it must be cooked or needs boiling water, otherwise false',
     'For water also give litresPerUnit. For a power bank or battery give mAh and wattHours as printed. For medicine give unitsPerPack (tablets, capsules or doses in one pack).',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function extractJson(text) {
@@ -67,7 +69,9 @@ export function extractJson(text) {
 const str = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
 /** Keeps only well-formed values, so a stray answer can never put nonsense into the form. */
-export function normalise(o, categories) {
+export function normalise(o, categories, types) {
+  const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+  const kind = ((types || {})[o.area] || []).find(t => same(t.id, o.type) || same(t.label, o.type));
   const unit = ['g', 'ml', 'pcs'].includes(o.unit) ? o.unit : null;
   const date = typeof o.bestBefore === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.bestBefore) ? o.bestBefore : null;
   const pos = v => { const n = num(v); return n !== null && n >= 0 ? n : null; };
@@ -78,7 +82,8 @@ export function normalise(o, categories) {
     bestBefore: date,
     barcode: o.barcode ? String(o.barcode).replace(/\D/g, '') || null : null,
     notes: str(o.notes),
-    category: (categories || []).includes(o.category) ? o.category : null,
+    category: (categories || []).find(c => o.category && same(c, o.category)) || null,
+    type: kind ? kind.id : null,
     kcalPer100: pos(o.kcalPer100), proteinPer100: pos(o.proteinPer100),
     kcalPerPack: pos(o.kcalPerPack), proteinPerPack: pos(o.proteinPerPack),
     drainedWeight: pos(o.drainedWeight),
@@ -120,12 +125,12 @@ async function call(apiKey, body) {
  * Sends up to three photos and returns the fields that could be read.
  * area: the area the person already chose, or null to let Claude suggest one.
  */
-export async function readLabel({ apiKey, model, blobs, area, categories }) {
+export async function readLabel({ apiKey, model, blobs, area, categories, types }) {
   const content = [];
   for (const b of blobs.slice(0, 3)) {
     content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobToBase64(b) } });
   }
-  content.push({ type: 'text', text: buildPrompt(area, categories) });   // images first, then the question
+  content.push({ type: 'text', text: buildPrompt(area, categories, types) });   // images first, then the question
   const data = await call(apiKey, { model, max_tokens: 4096, messages: [{ role: 'user', content }] });
   const text = (Array.isArray(data.content) ? data.content : []).filter(b => b && b.type === 'text').map(b => b.text).join('\n');
   const json = extractJson(text);
@@ -134,7 +139,7 @@ export async function readLabel({ apiKey, model, blobs, area, categories }) {
       ? 'The answer was cut short. Try again with fewer photos.'
       : 'The photos could not be read. Try a sharper, closer photo, or type the details in.');
   }
-  return normalise(json, categories);
+  return normalise(json, categories, types);
 }
 
 /** Makes the smallest possible request to confirm that the key and model work. */

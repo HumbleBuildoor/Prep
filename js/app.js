@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -732,6 +732,7 @@ function openItem(id, preset) {
   function applyRead(o) {
     const set = (k, x) => { if (x !== null && x !== undefined && x !== '') v[k] = x; };
     if (!areaTouched && o.area) { v.area = o.area; fixType(); }
+    if (v.area !== 'food' && o.type && (areaOf(v.area).types || []).some(t => t.id === o.type)) v.type = o.type;
     set('name', o.name); set('brand', o.brand); set('unitSize', o.unitSize); set('unit', o.unit); set('bestBefore', o.bestBefore); set('barcode', o.barcode);
     if (v.area === 'food') {
       set('category', o.category);
@@ -782,7 +783,7 @@ function openItem(id, preset) {
     if (reading) { readAgain = true; return; }             // a photo was added mid-read: read once more when this one ends
     reading = true; paintPhotos();
     try {
-      const out = await readLabel({ apiKey: S.apiKey, model: s.apiModel, blobs, area: areaTouched ? v.area : null, categories: s.foodCategories });
+      const out = await readLabel({ apiKey: S.apiKey, model: s.apiModel, blobs, area: areaTouched ? v.area : null, categories: s.foodCategories, types: Object.fromEntries(AREAS.filter(a => a.types).map(a => [a.id, a.types])) });
       collect(); applyRead(out);
     } catch (e) {
       collect();
@@ -856,6 +857,11 @@ function openItem(id, preset) {
       const t = e.target;
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
+      else if ((t.id === 'i-size' || t.id === 'i-unit') && v.area === 'water') {
+        // Water: the litres follow from the pack size, so nobody has to type the same thing twice.
+        const size = C.num($('#i-size', dlg).value), cap = $('#i-cap', dlg);
+        if (cap && size && $('#i-unit', dlg).value === 'ml' && (cap.value === '' || cap.dataset.auto)) { cap.value = String(size / 1000); cap.dataset.auto = '1'; }
+      }
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
         if (m && y) $('#i-bb', dlg).value = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;   // last day of that month

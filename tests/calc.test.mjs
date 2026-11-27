@@ -186,3 +186,14 @@ test('meal planner: fills each day to the target, eats the oldest first, respect
   assert.ok(noCook.days.length < r.days.length);
   assert.equal(C.planMeals([], S, TODAY, { kcalPerAdult: 1600 }).days.length, 0);
 });
+
+import { normalise, buildPrompt } from '../js/reader.js';
+test('label read: category and type are matched to the lists, never invented', () => {
+  const types = { pets: [{ id: 'dogfood', label: 'Dog food' }, { id: 'catfood', label: 'Cat food' }] };
+  const cats = ['Rice & Grains', 'Protein (canned)'];
+  assert.equal(normalise({ area: 'food', category: 'protein (canned) ' }, cats, types).category, 'Protein (canned)');
+  assert.equal(normalise({ area: 'food', category: 'Fish' }, cats, types).category, null);
+  assert.equal(normalise({ area: 'pets', type: 'Cat food' }, cats, types).type, 'catfood');
+  assert.equal(normalise({ area: 'pets', type: 'toiletpaper' }, cats, types).type, null);
+  assert.match(buildPrompt(null, cats, types), /"catfood" \(Cat food\)/);
+});
