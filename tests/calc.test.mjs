@@ -211,3 +211,37 @@ test('advice: impossible moves are dropped and quantities are capped', () => {
   assert.equal(ADV.cleanReview({ findings: [{ priority: 'urgent', title: 'T' }, {}] }).findings[0].priority, 'medium');
   assert.match(ADV.itemLines([{ area: 'food', name: 'Tuna', qty: 2, kcal: 151, protein: 20.7, needsCooking: false, location: 'Home' }], () => 'Food'), /#1 \| Food \| Tuna \| qty 2 \| 151 kcal, 20.7 g protein a pack \| no cooking needed \| no date \| kept at Home/);
 });
+
+import * as SY from '../js/sync.js';
+test('sync: code round trip, same keys on every device, records only open with the right key and id', async () => {
+  const code = SY.makeCode('https://prep-relay.example.workers.dev/');
+  const p = SY.parseCode(' ' + code + '\n');
+  assert.equal(p.url, 'https://prep-relay.example.workers.dev');
+  assert.equal(SY.parseCode(code.slice(0, -1)), null);
+  assert.equal(SY.parseCode('PREP1.' + Buffer.from('http://evil.example').toString('base64url') + '.' + code.split('.')[2]), null);
+  const a = await SY.deriveKeys(p.secret), b = await SY.deriveKeys(SY.parseCode(code).secret);
+  assert.equal(a.hh, b.hh); assert.equal(a.auth, b.auth); assert.match(a.hh, /^[a-f0-9]{32}$/);
+  const body = await SY.seal(a.key, 'x1', { t: 'item', v: { name: 'Tuna slices' } });
+  assert.ok(!body.includes('Tuna') && !Buffer.from(body, 'base64').toString('latin1').includes('Tuna'));
+  assert.deepEqual(await SY.unseal(b.key, 'x1', body), { t: 'item', v: { name: 'Tuna slices' } });
+  await assert.rejects(SY.unseal(b.key, 'x2', body));
+  const other = await SY.deriveKeys(SY.parseCode(SY.makeCode('https://r.example')).secret);
+  await assert.rejects(SY.unseal(other.key, 'x1', body));
+});
+
+test('sync merge: both devices using stock both count, later edit wins, tombstones stay deleted', () => {
+  const item = { id: 'i1', area: 'food', name: 'Rice', qty: 5, updatedAt: '2026-01-02' };
+  const local = { items: [{ ...item, qty: 3 }, { id: 'i2', area: 'food', name: 'Old name', qty: 1, updatedAt: '2026-01-01' }],
+    events: [{ id: 'e0', itemId: 'i1', delta: 5 }, { id: 'e1', itemId: 'i1', delta: -2 }, { id: 'f0', itemId: 'i2', delta: 1 }], meta: { settings: { at: '2026-01-05', v: { adults: 2 } } } };
+  const m = SY.merge(local, [
+    { t: 'event', v: { id: 'e0', itemId: 'i1', delta: 5 } }, { t: 'event', v: { id: 'e2', itemId: 'i1', delta: -1 } },
+    { t: 'item', v: { ...item, qty: 4, updatedAt: '2026-01-03' } },
+    { t: 'item', v: { id: 'i2', area: 'food', name: 'New name', qty: 0, deleted: true, updatedAt: '2026-01-04' } },
+    { t: 'item', v: { id: 'i2', area: 'food', name: 'Stale', qty: 9, updatedAt: '2025-12-01' } },
+    { t: 'meta', k: 'settings', at: '2026-01-04', v: { adults: 9 } }, { t: 'meta', k: 'scenarios', at: '2026-01-04', v: [] }, { t: 'junk' }, null,
+  ]);
+  assert.deepEqual(m.events.map(e => e.id), ['e2']);
+  assert.equal(m.items.find(i => i.id === 'i1').qty, 2);            // 5 - 2 - 1
+  assert.equal(m.items.find(i => i.id === 'i2').deleted, true);
+  assert.deepEqual(Object.keys(m.meta), ['scenarios']);             // the older settings do not replace newer local ones
+});

@@ -112,3 +112,6 @@ export const SOURCES = [
     why: 'Three days for a grab bag and two weeks at home follow common public-health advice. The other lengths are planning choices. Change them freely.',
     url: 'https://www.cdc.gov/water-emergency/about/how-to-create-and-store-an-emergency-water-supply.html', from: 'CDC' },
 ];
+
+// The household's relay (a Cloudflare Worker). It only ever receives encrypted data. Empty until one is set up.
+export const RELAY_URL = '';

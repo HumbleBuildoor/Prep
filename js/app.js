@@ -1,12 +1,13 @@
 // Prep: the app shell, views and dialogs. Data lives in IndexedDB on this device (see db.js).
 
 import * as C from './calc.js';
-import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_SCENARIOS, SOURCES } from './defaults.js';
+import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_SCENARIOS, SOURCES, RELAY_URL } from './defaults.js';
 import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
+import * as SY from './sync.js';
 
-const APP_VERSION = '1.11.4';
+const APP_VERSION = '1.12.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -40,6 +41,7 @@ function amount(v, unit) {
 const S = {
   items: [], events: [], settings: { ...DEFAULT_SETTINGS }, scenarios: DEFAULT_SCENARIOS.map(x => ({ ...x })),
   view: 'ready', f: { q: '', area: '', loc: '', st: '', sort: 'due', act: '' },
+  sync: { code: '', since: 0, pushed: new Set(), status: '', error: '', lastAt: '', settingsAt: '', scenariosAt: '', show: false },
   apiKey: '', deviceId: '', lastBackupAt: '', persisted: null, installEvt: null, swReg: null, updateReady: false, updateRequested: false, error: '',
 };
 const main = $('#main'), dlg = $('#dlg'), askDlg = $('#ask');
@@ -59,6 +61,8 @@ async function load() {
   S.lastBackupAt = lastBackupAt || '';
   S.deviceId = deviceId || uid();
   if (!deviceId) await DB.put('meta', S.deviceId, 'deviceId');
+  const [code, since, pushed, lastAt, settingsAt, scenariosAt] = await Promise.all(['syncCode', 'syncSince', 'syncPushed', 'syncLastAt', 'settingsAt', 'scenariosAt'].map(k => DB.get('meta', k)));
+  Object.assign(S.sync, { code: code || '', since: Number(since) || 0, pushed: new Set(Array.isArray(pushed) ? pushed : []), lastAt: lastAt || '', settingsAt: settingsAt || '', scenariosAt: scenariosAt || '' });
 }
 
 function toast(text) {
@@ -95,10 +99,125 @@ async function commit(item, type, delta) {
   const i = S.items.findIndex(x => x.id === item.id);
   if (i >= 0) S.items[i] = item; else S.items.push(item);
   S.events.unshift(ev);
+  scheduleSync();
 }
 
-async function saveSettings() { await DB.put('meta', S.settings, 'settings'); }
-async function saveScenarios() { await DB.put('meta', S.scenarios, 'scenarios'); }
+async function saveSettings() { await DB.put('meta', S.settings, 'settings'); await stampMeta('settings'); }
+async function saveScenarios() { await DB.put('meta', S.scenarios, 'scenarios'); await stampMeta('scenarios'); }
+// Settings and scenarios carry the time they last changed, so the newest version wins when devices sync.
+async function stampMeta(k) { S.sync[k + 'At'] = nowISO(); await DB.put('meta', S.sync[k + 'At'], k + 'At'); scheduleSync(); }
+
+// ---------- sync between devices ----------
+const SYNC = { keys: null, url: '', busy: false, run: Promise.resolve(false), timer: null };
+function scheduleSync(ms = 1500) {
+  if (!S.sync.code) return;
+  clearTimeout(SYNC.timer);
+  SYNC.timer = setTimeout(() => { syncNow(); }, ms);
+}
+function syncText() {
+  const y = S.sync;
+  if (!y.code) return 'Off';
+  if (y.status === 'syncing') return 'Syncing…';
+  if (y.status === 'offline') return 'Offline. Will sync when connected.';
+  if (y.status === 'error') return y.error || 'Sync failed.';
+  if (!y.lastAt) return 'On';
+  const d = new Date(y.lastAt);
+  return 'Synced ' + d.toLocaleString('en-MY', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+}
+function paintSync() { const e = $('#sync-state'); if (e) { e.textContent = syncText(); e.className = 'note' + (S.sync.status === 'error' ? ' d-expired' : ''); } }
+function localRecords() {
+  const out = [], done = S.sync.pushed;
+  for (const e of S.events) if (!done.has(e.id)) out.push({ id: e.id, rec: { t: 'event', v: e } });
+  for (const it of S.items) { const id = it.id + ':' + (it.updatedAt || ''); if (!done.has(id)) out.push({ id, rec: { t: 'item', v: it } }); }
+  for (const k of ['settings', 'scenarios']) {
+    const at = S.sync[k + 'At'];
+    if (at && !done.has(k + ':' + at)) out.push({ id: k + ':' + at, rec: { t: 'meta', k, at, v: S[k] } });
+  }
+  return out;
+}
+async function applyIncoming(incoming) {
+  const y = S.sync;
+  const m = SY.merge({ items: S.items, events: S.events, meta: { settings: { at: y.settingsAt }, scenarios: { at: y.scenariosAt } } }, incoming);
+  await DB.putAll(m.events.map(e => ['events', e]).concat(m.items.map(i => ['items', i])));
+  for (const it of m.items) { const i = S.items.findIndex(x => x.id === it.id); if (i >= 0) S.items[i] = it; else S.items.push(it); }
+  if (m.events.length) S.events = S.events.concat(m.events).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  if (m.meta.settings && m.meta.settings.v && typeof m.meta.settings.v === 'object') {
+    S.settings = { ...DEFAULT_SETTINGS, ...m.meta.settings.v }; y.settingsAt = m.meta.settings.at;
+    await DB.put('meta', S.settings, 'settings'); await DB.put('meta', y.settingsAt, 'settingsAt');
+  }
+  if (m.meta.scenarios && Array.isArray(m.meta.scenarios.v)) {
+    S.scenarios = m.meta.scenarios.v.filter(x => x && typeof x.id === 'string' && typeof x.name === 'string'); y.scenariosAt = m.meta.scenarios.at;
+    await DB.put('meta', S.scenarios, 'scenarios'); await DB.put('meta', y.scenariosAt, 'scenariosAt');
+  }
+  return m.items.length + m.events.length + Object.keys(m.meta).length;
+}
+function syncNow(opts = {}) {
+  if (!S.sync.code) return Promise.resolve(false);
+  // One exchange at a time. A caller that arrives mid-exchange waits for it, then a fresh one picks up what it missed.
+  if (SYNC.busy) return SYNC.run.then(() => syncNow(opts));
+  SYNC.run = syncOnce(opts);
+  return SYNC.run;
+}
+async function syncOnce(opts) {
+  const y = S.sync;
+  if (!navigator.onLine) { y.status = 'offline'; paintSync(); return false; }
+  SYNC.busy = true; y.status = 'syncing'; paintSync();
+  let changed = 0, ok = false;
+  try {
+    if (!SYNC.keys) {
+      const p = SY.parseCode(y.code);
+      if (!p) throw new SY.SyncError('code', 'The saved code is not valid. Stop syncing and enter it again.');
+      SYNC.url = p.url; SYNC.keys = await SY.deriveKeys(p.secret);
+    }
+    const k = SYNC.keys, queue = localRecords();
+    let create = !!opts.create, more = false, rounds = 0;
+    do {
+      const batch = queue.splice(0, 100), push = [];
+      for (const b of batch) push.push({ id: b.id, body: await SY.seal(k.key, b.id, b.rec) });
+      const res = await SY.post(SYNC.url, '/v1/sync', { hh: k.hh, auth: k.auth, since: y.since, create, push });
+      create = false;
+      batch.forEach(b => y.pushed.add(b.id));
+      const incoming = [];
+      for (const c of Array.isArray(res.changes) ? res.changes : []) {
+        if (y.pushed.has(c.id)) continue;
+        try { incoming.push(await SY.unseal(k.key, c.id, c.body)); } catch (e) { /* not ours or damaged: leave it */ }
+        y.pushed.add(c.id);
+      }
+      if (incoming.length) changed += await applyIncoming(incoming);
+      y.since = Number(res.cursor) || y.since; more = !!res.more;
+      await DB.put('meta', y.since, 'syncSince'); await DB.put('meta', [...y.pushed], 'syncPushed');
+    } while ((queue.length || more) && ++rounds < 1000);
+    y.lastAt = nowISO(); y.status = 'ok'; y.error = ''; ok = true;
+    await DB.put('meta', y.lastAt, 'syncLastAt');
+  } catch (x) {
+    y.status = 'error'; y.error = x && x.userMessage ? x.userMessage : 'Sync failed. It will try again.'; y.errorCode = x && x.code;
+    if (!(x instanceof SY.SyncError)) console.error(x);
+  } finally {
+    SYNC.busy = false;
+    if (changed && !dlg.open) refresh(); else if (changed) { renderBanner(); }
+    paintSync();
+  }
+  return ok;
+}
+async function syncEnable(code, create) {
+  const y = S.sync;
+  Object.assign(y, { code, since: 0, pushed: new Set(), status: '', error: '', lastAt: '', show: create });
+  SYNC.keys = null;
+  if (create) { for (const k of ['settings', 'scenarios']) if (!y[k + 'At']) { y[k + 'At'] = nowISO(); await DB.put('meta', y[k + 'At'], k + 'At'); } }
+  else { y.settingsAt = ''; y.scenariosAt = ''; await DB.put('meta', '', 'settingsAt'); await DB.put('meta', '', 'scenariosAt'); }   // joining: the household's settings win
+  await DB.put('meta', code, 'syncCode'); await DB.put('meta', 0, 'syncSince'); await DB.put('meta', [], 'syncPushed');
+  render();
+  const ok = await syncNow({ create });
+  if (!ok && ['unknown', 'code'].includes(y.errorCode)) { const msg = y.error; await syncDisable(); toast(msg); return false; }
+  render();
+  return ok;
+}
+async function syncDisable() {
+  Object.assign(S.sync, { code: '', since: 0, pushed: new Set(), status: '', error: '', lastAt: '', show: false });
+  SYNC.keys = null; clearTimeout(SYNC.timer);
+  for (const k of ['syncCode', 'syncSince', 'syncPushed', 'syncLastAt']) await DB.del('meta', k);
+  render();
+}
 
 async function keepStorage() {
   // Ask the browser not to clear this app's data when the phone runs low on space.
@@ -453,6 +572,20 @@ function viewMore() {
       <label class="f">API key<input id="k-key" class="secret" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${S.apiKey ? 'Saved. Paste a new one to replace it' : 'sk-ant-…'}"></label>
       <label class="f">Model<select id="k-model">${MODELS.map(m => opt(m.id, m.label, s.apiModel)).join('')}</select></label>
       <div class="actions">${S.apiKey ? '<button class="btn danger" type="button" data-act="key-remove">Remove key</button><button class="btn" type="button" data-act="key-test">Test</button>' : ''}<button class="btn primary" type="submit">Save</button></div>`, 'form', ' id="key-form"') +
+
+    fold('sync', 'Sync between devices', S.sync.code ? 'On' : 'Off', S.sync.code ? `
+      <p class="note" id="sync-state">${esc(syncText())}</p>
+      <div class="actions start"><button class="btn primary small" data-act="sync-now">Sync now</button><button class="btn small" data-act="sync-code">${S.sync.show ? 'Hide the code' : 'Show the code'}</button></div>
+      ${S.sync.show ? `<label class="f">Enter this on each of your other devices. Anyone who has it can read and change your data, so keep a written copy with your documents and share it carefully.<textarea id="y-show" rows="4" readonly>${esc(S.sync.code)}</textarea></label>
+        <div class="actions start"><button class="btn small" data-act="sync-copy">Copy the code</button></div>` : ''}
+      <div class="actions start"><button class="btn small" data-act="sync-stop">Stop on this device</button><button class="btn danger small" data-act="sync-rotate">Change the code</button></div>
+      <p class="note">Changes are encrypted on this device before they are sent. The relay stores them but cannot read them. Photos stay on the device that took them; the small thumbnail is shared.</p>` : `
+      <p class="note">Keeps your devices in step through a relay that only holds encrypted data. Each device still works with no connection and catches up later.</p>
+      <label class="f">Code from a device that already syncs<textarea id="y-code" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="PREP1.…"></textarea></label>
+      <div class="actions start"><button class="btn primary small" data-act="sync-join">Join with this code</button></div>
+      <h3>Or start here, if this is the first device</h3>
+      <label class="f">Relay address<input id="y-url" type="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://prep-relay.your-name.workers.dev" value="${esc(RELAY_URL)}"></label>
+      <div class="actions start"><button class="btn small" data-act="sync-start">Start syncing from this device</button></div>`) +
 
     fold('sources', 'Where the figures come from', `${SOURCES.length} sources`, `<ul class="sources">${SOURCES.map(x =>
       `<li><b>${esc(x.what)}</b><span>${esc(x.why)}</span>${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.from)}</a>` : `<i>${esc(x.from)}</i>`}</li>`).join('')}</ul>`) +
@@ -1366,7 +1499,7 @@ async function importBackup(file) {
     }
     await load();
   });
-  if (ok) { refresh(); toast(`Imported: ${added} new, ${updated} updated.`); keepStorage(); }
+  if (ok) { refresh(); toast(`Imported: ${added} new, ${updated} updated.`); keepStorage(); scheduleSync(); }
 }
 
 // ---------- page events ----------
@@ -1385,6 +1518,38 @@ document.addEventListener('click', async e => {
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
     case 'advise': openAdvisor(b.dataset.v); break;
+    case 'sync-now': b.disabled = true; if (await syncNow()) toast('Synced.'); else toast(syncText()); render(); break;
+    case 'sync-code': S.sync.show = !S.sync.show; render(); break;
+    case 'sync-copy':
+      try { await navigator.clipboard.writeText(S.sync.code); toast('Code copied.'); } catch (x) { const t = $('#y-show'); if (t) { t.focus(); t.select(); } toast('Select the code and copy it.'); }
+      break;
+    case 'sync-join': {
+      const code = ($('#y-code').value || '').replace(/\s+/g, '');
+      if (!SY.parseCode(code)) { toast('That is not a complete Prep code.'); break; }
+      b.disabled = true;
+      if (await syncEnable(code, false)) toast('Joined. This device is now in sync.');
+      break;
+    }
+    case 'sync-start': {
+      const url = SY.cleanUrl($('#y-url').value);
+      if (!url) { toast('Enter the relay address, starting with https://'); break; }
+      b.disabled = true;
+      if (await syncEnable(SY.makeCode(url), true)) toast('Syncing is on. Enter the code on your other devices.'); else toast(syncText());
+      break;
+    }
+    case 'sync-stop':
+      if (await ask('Stop syncing on this device? Your data stays here. The other devices carry on.', 'Stop', false)) { await guard(syncDisable); toast('Syncing is off on this device.'); }
+      break;
+    case 'sync-rotate': {
+      if (!(await ask('Change the code? The copy on the relay is erased and a new code is made. Every other device stops syncing until you enter the new code on it.', 'Change the code', true))) break;
+      const p = SY.parseCode(S.sync.code);
+      if (!p) break;
+      b.disabled = true;
+      try { const k = await SY.deriveKeys(p.secret); await SY.post(p.url, '/v1/wipe', { hh: k.hh, auth: k.auth }); }
+      catch (x) { toast(x && x.userMessage ? x.userMessage : 'Could not reach the relay.'); render(); break; }
+      if (await syncEnable(SY.makeCode(p.url), true)) toast('New code made. Enter it on your other devices.');
+      break;
+    }
     case 'area': S.f.area = b.dataset.v; render(); break;
     case 'filters': S.f.open = !(S.f.open || S.f.loc || S.f.st || (S.f.sort && S.f.sort !== 'due')); if (!S.f.open) Object.assign(S.f, { loc: '', st: '', sort: 'due' }); render(); break;
     case 'ration': S.settings.rationLevel = b.dataset.v; await guard(saveSettings); render(); break;
@@ -1470,6 +1635,9 @@ main.addEventListener('submit', async e => {
 window.addEventListener('hashchange', route);
 const net = () => { $('#net').hidden = navigator.onLine; };
 window.addEventListener('online', net);
+window.addEventListener('online', () => scheduleSync(500));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(500); });
+setInterval(() => { if (document.visibilityState === 'visible' && !dlg.open) scheduleSync(0); }, 60000);
 window.addEventListener('offline', net);
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.installEvt = e; if (S.view === 'more') render(); });
 
@@ -1499,5 +1667,6 @@ async function start() {
   }
   route(); renderBanner();
   registerSW();
+  scheduleSync(800);
 }
 start();
