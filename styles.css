@@ -318,3 +318,16 @@ dialog { box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
 .dlg-foot .btn.small { line-height: 1.15; font-size: 13px; }
 
 .note.sug { margin-top: -6px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }
+
+/* ----- ask Claude ----- */
+.askrow { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.ask2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ask2 .btn { flex-direction: column; gap: 4px; padding: 10px 8px; min-height: 68px; font-size: 14px; line-height: 1.2; color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.ask2 .btn svg { margin: 0; }
+ul.moves, ul.finds { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+ul.moves li, ul.finds li { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; }
+ul.moves span, ul.finds li { display: flex; flex-direction: column; gap: 3px; }
+ul.moves small { font-size: 13px; color: var(--muted); } ul.moves small:first-of-type { color: var(--accent); font-weight: 600; }
+ul.finds li { border-left-width: 4px; font-size: 14px; }
+ul.finds b { font-size: 15px; } ul.finds span { color: var(--muted); } ul.finds .todo { color: var(--ink); }
+.f-high { border-left-color: var(--bad) !important; } .f-medium { border-left-color: var(--warn) !important; } .f-low { border-left-color: var(--ok) !important; }

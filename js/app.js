@@ -3,9 +3,10 @@
 import * as C from './calc.js';
 import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_SCENARIOS, SOURCES } from './defaults.js';
 import * as DB from './db.js';
-import { readLabel, testKey } from './reader.js';
+import { readLabel, testKey, askJson } from './reader.js';
+import * as ADV from './advisor.js';
 
-const APP_VERSION = '1.10.1';
+const APP_VERSION = '1.11.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -306,6 +307,11 @@ function viewReady() {
     h += `<div class="card"><h2>Fix next</h2><ul class="gaps">${gs.slice(0, 3).map(gapRow).join('')}</ul>` +
       (gs.length > 3 ? `<details class="more"><summary>Show all ${gs.length}</summary><ul class="gaps">${gs.slice(3).map(gapRow).join('')}</ul></details>` : '') + '</div>';
   }
+  if (items.length) {
+    h += `<div class="card"><div class="askrow"><h2>Ask Claude</h2><span class="state">sends your list, never photos</span></div>
+      <div class="ask2"><button class="btn" data-act="advise" data-v="place">${svg('<path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.500C5 14.800 12 21 12 21z"/><circle cx="12" cy="9.500" r="2.500"/>', ' width="20" height="20"')}Where things should go</button>
+      <button class="btn" data-act="advise" data-v="review">${svg('<path d="M9 11.500l2 2 4-4.500M5 4h14v16H5z"/>', ' width="20" height="20"')}Review my stockpile</button></div></div>`;
+  }
   const jump = (label, n, f) => `<a href="#supplies" data-jump="${f}"><span>${label}</span><b>${n}</b></a>`;
   h += `<details class="card fold2" data-open="stock"${OPEN.has('stock') ? ' open' : ''}><summary><h2>In stock</h2><span class="state">${plural(t.rows, 'item')}</span></summary><div class="fold-body"><div class="tiles">
       <div class="tile"><div class="n">${n1(t.water)} L</div><div class="l">water</div></div>
@@ -387,7 +393,7 @@ function viewDue() {
 }
 
 // ---------- view: Log ----------
-const ACT = { ADD: 'Added', USE: 'Used', RESTOCK: 'Restocked', EDIT: 'Edited', CHECK: 'Checked', DELETE: 'Deleted', IMPORT: 'Imported' };
+const ACT = { ADD: 'Added', USE: 'Used', RESTOCK: 'Restocked', MOVE: 'Moved', EDIT: 'Edited', CHECK: 'Checked', DELETE: 'Deleted', IMPORT: 'Imported' };
 function viewLog() {
   const f = S.f;
   const rows = S.events.filter(e => !f.act || e.type === f.act).slice(0, 400);
@@ -1151,6 +1157,107 @@ function openMeals() {
   });
 }
 
+// ---------- ask Claude: where things should go, and a review ----------
+async function applyMoves(moves) {
+  let done = 0;
+  for (const m of moves) {
+    const it = S.items.find(x => x.id === m.id && !x.deleted);
+    if (!it) continue;
+    const have = C.num(it.qty) || 0, q = round3(Math.min(m.qty, have));
+    if (!(q > 0) || it.location === m.to) continue;
+    const twin = S.items.find(o => !o.deleted && o.id !== it.id && o.location === m.to && o.area === it.area && (o.brand || '') === (it.brand || '') &&
+      (o.bestBefore || '') === (it.bestBefore || '') && String(o.name).toLowerCase() === String(it.name).toLowerCase());
+    if (q >= have && !twin) await commit({ ...it, location: m.to }, 'MOVE', 0);                 // the whole lot moves: same item, new place
+    else {
+      if (q >= have) await commit({ ...it, qty: 0, deleted: true, thumb: '' }, 'MOVE', -q);       // merged into the same item already there
+      else await commit({ ...it, qty: round3(have - q) }, 'MOVE', -q);
+      if (twin) await commit({ ...twin, qty: round3((C.num(twin.qty) || 0) + q) }, 'MOVE', q);
+      else await commit({ ...it, id: uid(), qty: q, location: m.to, createdAt: nowISO() }, 'MOVE', q);
+    }
+    done++;
+  }
+  return done;
+}
+
+function openAdvisor(kind) {
+  const s = S.settings, place = kind === 'place';
+  const title = place ? 'Where things should go' : 'Review my stockpile';
+  const items = live().filter(i => (C.num(i.qty) || 0) > 0 || i.area === 'kit');
+  let stage = 'intro', result = null, error = '', alive = true;
+  const head = `<div class="dlg-head"><h2>${title}</h2><button class="btn small" type="button" data-x="close">Close</button></div>`;
+  const paint = () => {
+    if (!S.apiKey) {
+      dlg.innerHTML = `<div class="dlg">${head}<p class="note">This needs your Anthropic API key. Add it under More, in Reading labels.</p><div class="actions"><a class="btn primary" href="#more" data-x="close">Go to More</a></div></div>`;
+    } else if (stage === 'intro') {
+      dlg.innerHTML = `<div class="dlg">${head}
+        <p class="note">${place ? 'Claude looks at everything you have and every location, and proposes what to move where. You choose which moves to apply.' : 'Claude reads your whole list and tells you what most needs attention.'}</p>
+        <label class="f">Tell Claude about your locations and situation (saved on this phone)<textarea id="a-note" rows="4" placeholder="For example: Tank 300 is the car, parked in a hot basement. The two Osprey bags stay by the door.">${esc(s.adviceNote || '')}</textarea></label>
+        <div class="banner info"><span>Sends ${plural(items.length, 'item')} (names, amounts, dates, locations), your household figures and this note to Anthropic with your key. No photos.</span></div>
+        ${error ? `<div class="banner bad"><span>${esc(error)}</span></div>` : ''}
+        <div class="actions"><button class="btn primary" data-x="go">Ask Claude</button></div></div>`;
+    } else if (stage === 'loading') {
+      dlg.innerHTML = `<div class="dlg">${head}<p class="empty">Claude is working on it. This can take up to a minute.</p></div>`;
+    } else if (place) {
+      const r = result;
+      dlg.innerHTML = `<div class="dlg">${head}${r.summary ? `<p>${esc(r.summary)}</p>` : ''}
+        ${r.moves.length ? `<ul class="moves">${r.moves.map((m, i) => `<li><label class="c"><input type="checkbox" data-i="${i}" checked><span><b>${esc(n1(m.qty))} × ${esc(m.name)}</b>
+          <small>${esc(m.from || 'no location')} → ${esc(m.to)}</small><small>${esc(m.why)}</small></span></label></li>`).join('')}</ul>` : '<p class="note">No moves suggested.</p>'}
+        ${r.cautions.map(c => `<div class="banner warn"><span>${esc(c)}</span></div>`).join('')}
+        <p class="note">These are suggestions from Claude. Check them against what you know before applying.</p>
+        ${r.moves.length ? '<div class="dlg-foot"><button class="btn primary grow" data-x="apply">Apply the ticked moves</button></div>' : ''}</div>`;
+    } else {
+      const r = result;
+      dlg.innerHTML = `<div class="dlg">${head}${r.summary ? `<p>${esc(r.summary)}</p>` : ''}
+        ${r.findings.length ? `<ul class="finds">${r.findings.map(f => `<li class="f-${f.priority}"><b>${esc(f.title)}</b>${f.detail ? `<span>${esc(f.detail)}</span>` : ''}${f.action ? `<span class="todo">${esc(f.action)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="note">Nothing flagged.</p>'}
+        <p class="note">These are suggestions from Claude, based only on what you have logged. Check them against what you know.</p></div>`;
+    }
+  };
+  const run = async () => {
+    const note = ($('#a-note', dlg).value || '').trim().slice(0, 1500);
+    if (note !== (s.adviceNote || '')) { s.adviceNote = note; await guard(saveSettings); }
+    if (!navigator.onLine) { error = 'You are offline. This needs a connection.'; paint(); return; }
+    stage = 'loading'; error = ''; paint();
+    const scenarioLines = S.scenarios.map(scn => {
+      const r = C.evaluate(scn, live(), s, today(), typeLabel);
+      const locs = Array.isArray(scn.locations) && scn.locations.length ? 'counts only ' + scn.locations.join(' and ') : 'counts every location';
+      return `- ${scn.name}: ${scn.days} days, ${scn.place === 'away' ? 'away from home' : 'at home'}, ${locs}. ` +
+        (r.needs.length ? r.needs.map(n => `${n.name} ${n.logged ? fmtDays(n.days) + ' days' : 'nothing logged'}`).join('; ') : 'nothing needs stocking') + '.';
+    }).join('\n');
+    const kindOf = it => areaOf(it.area).name + ' / ' + (it.area === 'food' ? it.category : typeLabel(it.area, it.type));
+    const prompt = ADV.context({ settings: s, locations: s.locations, scenarioLines, note, today: today() }) + '\n\nItems:\n' +
+      ADV.itemLines(items.map(it => ({ ...it, capUnit: areaOf(it.area).capUnit })), kindOf);
+    try {
+      const json = await askJson({ apiKey: S.apiKey, model: s.apiModel, system: place ? ADV.PLACE_SYSTEM : ADV.REVIEW_SYSTEM, prompt });
+      if (!alive) return;
+      result = place ? ADV.cleanMoves(json, items, s.locations) : ADV.cleanReview(json);
+      stage = 'result';
+    } catch (x) {
+      if (!alive) return;
+      stage = 'intro'; error = x && x.userMessage ? x.userMessage : 'That did not work. Try again.';
+    }
+    paint();
+  };
+  openDlg(() => {
+    dlgCleanup = () => { alive = false; };
+    paint();
+    dlg.onclick = async e => {
+      const b = e.target.closest('[data-x]');
+      if (!b) return;
+      const x = b.dataset.x;
+      if (x === 'close') return dlg.close();
+      if (x === 'go') return run();
+      if (x === 'apply') {
+        const picked = result.moves.filter((m, i) => { const c = dlg.querySelector(`input[data-i="${i}"]`); return c && c.checked; });
+        if (!picked.length) { toast('Tick at least one move.'); return; }
+        b.disabled = true;
+        let n = 0;
+        const ok = await guard(async () => { n = await applyMoves(picked); });
+        if (ok) { dlg.close(); refresh(); toast(`Moved ${plural(n, 'item')}. Now move them for real.`); } else b.disabled = false;
+      }
+    };
+  });
+}
+
 // ---------- backup ----------
 async function exportBackup(withPhotos) {
   const data = { app: 'prep', format: 1, exportedAt: nowISO(), deviceId: S.deviceId, settings: S.settings, scenarios: S.scenarios, items: S.items, events: S.events };
@@ -1229,6 +1336,7 @@ document.addEventListener('click', async e => {
     case 'scn': openScenario(id); break;
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
+    case 'advise': openAdvisor(b.dataset.v); break;
     case 'area': S.f.area = b.dataset.v; render(); break;
     case 'filters': S.f.open = !(S.f.open || S.f.loc || S.f.st || (S.f.sort && S.f.sort !== 'due')); if (!S.f.open) Object.assign(S.f, { loc: '', st: '', sort: 'due' }); render(); break;
     case 'ration': S.settings.rationLevel = b.dataset.v; await guard(saveSettings); render(); break;

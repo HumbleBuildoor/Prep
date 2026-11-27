@@ -197,3 +197,17 @@ test('label read: category and type are matched to the lists, never invented', (
   assert.equal(normalise({ area: 'pets', type: 'toiletpaper' }, cats, types).type, null);
   assert.match(buildPrompt(null, cats, types), /"catfood" \(Cat food\)/);
 });
+
+import * as ADV from '../js/advisor.js';
+test('advice: impossible moves are dropped and quantities are capped', () => {
+  const items = [{ id: 'a', name: 'Tuna', qty: 3, location: 'Home' }, { id: 'b', name: 'Rice', qty: 1, location: 'Home' }];
+  const locs = ['Home', 'Bag', 'Car'];
+  const r = ADV.cleanMoves({ summary: 'x', moves: [
+    { item: 1, qty: 2, to: 'bag', why: 'short' }, { item: 1, qty: 5, to: 'Car' },      // second is capped to the 1 that is left
+    { item: 2, qty: 1, to: 'Home' }, { item: 9, qty: 1, to: 'Bag' }, { item: 2, qty: 1, to: 'Shed' }, { item: 2, qty: 0, to: 'Bag' },
+  ] }, items, locs);
+  assert.deepEqual(r.moves.map(m => [m.id, m.qty, m.to]), [['a', 2, 'Bag'], ['a', 1, 'Car']]);
+  assert.equal(ADV.cleanMoves(null, items, locs).moves.length, 0);
+  assert.equal(ADV.cleanReview({ findings: [{ priority: 'urgent', title: 'T' }, {}] }).findings[0].priority, 'medium');
+  assert.match(ADV.itemLines([{ area: 'food', name: 'Tuna', qty: 2, kcal: 151, protein: 20.7, needsCooking: false, location: 'Home' }], () => 'Food'), /#1 \| Food \| Tuna \| qty 2 \| 151 kcal, 20.7 g protein a pack \| no cooking needed \| no date \| kept at Home/);
+});

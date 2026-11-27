@@ -142,6 +142,15 @@ export async function readLabel({ apiKey, model, blobs, area, categories, types 
   return normalise(json, categories, types);
 }
 
+/** Asks a text-only question and returns the JSON object in the answer. Sends no photos. */
+export async function askJson({ apiKey, model, system, prompt }) {
+  const data = await call(apiKey, { model, max_tokens: 4096, system, messages: [{ role: 'user', content: prompt }] });
+  const text = (Array.isArray(data.content) ? data.content : []).filter(b => b && b.type === 'text').map(b => b.text).join('\n');
+  const json = extractJson(text);
+  if (!json || typeof json !== 'object') throw new ReadError('parse', data.stop_reason === 'max_tokens' ? 'The answer was cut short. Try again.' : 'The answer could not be read. Try again.');
+  return json;
+}
+
 /** Makes the smallest possible request to confirm that the key and model work. */
 export async function testKey(apiKey, model) {
   await call(apiKey, { model, max_tokens: 64, messages: [{ role: 'user', content: 'Reply with the single word OK.' }] });
