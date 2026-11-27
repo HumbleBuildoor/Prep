@@ -6,7 +6,7 @@ import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 
-const APP_VERSION = '1.11.3';
+const APP_VERSION = '1.11.4';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -181,6 +181,9 @@ document.addEventListener('toggle', e => {
 const fold = (key, title, state, body, tag = 'div', attrs = '') =>
   `<details class="card fold2" data-open="${key}"${OPEN.has(key) ? ' open' : ''}><summary><h2>${title}</h2><span class="state">${state || ''}</span></summary><${tag} class="fold-body"${attrs}>${body}</${tag}></details>`;
 
+// A check (recharge a power bank, test a torch) is flagged this many days before it is due, not months ahead like a best-before date.
+const CHECK_DAYS = 3;
+
 // ---------- item display ----------
 function dueInfo(it) {
   const due = C.nextDue(it);
@@ -190,8 +193,8 @@ function dueInfo(it) {
   }
   const d = C.daysLeft(due.date, today());
   if (due.kind === 'check') {
-    const cls = d < 0 ? 'expired' : d < 30 ? 'eatfirst' : 'ok';
-    return { cls, label: d < 0 ? 'Check overdue' : d < 30 ? 'Check soon' : 'OK', text: `Check by ${fdate(due.date)} · ${dayWords(d)}`, days: d, kind: 'check', date: due.date };
+    const cls = d < 0 ? 'expired' : d <= CHECK_DAYS ? 'eatfirst' : 'ok';
+    return { cls, label: d < 0 ? 'Check overdue' : d <= CHECK_DAYS ? 'Check soon' : 'OK', text: `Check by ${fdate(due.date)} · ${dayWords(d)}`, days: d, kind: 'check', date: due.date };
   }
   const st = C.expiryStatus(it, S.settings, today());
   const label = { expired: 'Past date', eatfirst: it.area === 'food' ? 'Eat first' : 'Use first', soon: 'Soon', ok: 'OK' }[st];
@@ -363,7 +366,7 @@ function viewSupplies() {
 
 // ---------- view: Due ----------
 function viewDue() {
-  const s = S.settings, buckets = { over: [], d30: [], first: [], soon: [], later: [] };
+  const s = S.settings, buckets = { over: [], checks: [], d30: [], first: [], soon: [], later: [] };
   let undated = 0;
   for (const it of live()) {
     if ((C.num(it.qty) || 0) <= 0 && it.area !== 'kit') continue;
@@ -375,18 +378,18 @@ function viewDue() {
     for (const e of entries) {
       const d = C.daysLeft(e.date, today());
       // A check is a reminder, not a shelf life: it only needs attention in its last 30 days.
-      const b = d < 0 ? 'over' : d < 30 ? 'd30' : e.check ? 'later' : d < s.eatFirstDays ? 'first' : d < s.soonDays ? 'soon' : 'later';
+      const b = d < 0 ? 'over' : e.check ? (d <= CHECK_DAYS ? 'checks' : 'later') : d < 30 ? 'd30' : d < s.eatFirstDays ? 'first' : d < s.soonDays ? 'soon' : 'later';
       buckets[b].push({ it, d, ...e });
     }
   }
   const tone = d => d < 0 ? 'expired' : d < s.eatFirstDays ? 'eatfirst' : d < s.soonDays ? 'soon' : 'ok';
-  const row = e => `<li class="row s-${e.check && e.d >= 30 ? 'ok' : tone(e.d)}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
-      <span class="daybox d-${e.check && e.d >= 30 ? 'ok' : tone(e.d)}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
+  const row = e => `<li class="row s-${e.check && e.d > CHECK_DAYS ? 'ok' : tone(e.d)}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
+      <span class="daybox d-${e.check && e.d > CHECK_DAYS ? 'ok' : tone(e.d)}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
       <span class="row-text"><span class="nm">${esc(e.it.name)}</span><span class="mt">${esc(e.kind)} ${esc(fdate(e.date))}${e.check ? '' : ' · ' + esc(n1(C.num(e.it.qty) || 0)) + ' in stock'}${e.it.location ? ' · ' + esc(e.it.location) : ''}</span></span></button>
       ${e.check ? `<button class="qty" data-act="checked" data-id="${esc(e.it.id)}"><b>✓</b><small>checked</small></button>` : ''}</li>`;
   const sect = (title, arr) => arr.length ? `<h2 class="sect">${esc(title)} (${arr.length})</h2><ul class="rows">${arr.sort((a, b) => a.d - b.d).map(row).join('')}</ul>` : '';
   const any = Object.values(buckets).some(a => a.length);
-  return sect('Overdue', buckets.over) + sect('Next 30 days', buckets.d30) + sect(`Within ${s.eatFirstDays} days`, buckets.first) +
+  return sect('Overdue', buckets.over) + sect(`Checks due within ${CHECK_DAYS} days`, buckets.checks) + sect('Next 30 days', buckets.d30) + sect(`Within ${s.eatFirstDays} days`, buckets.first) +
     sect(`Within ${s.soonDays} days`, buckets.soon) +
     (buckets.later.length ? `<details class="fold"><summary>Later (${buckets.later.length})</summary><ul class="rows">${buckets.later.sort((a, b) => a.d - b.d).map(row).join('')}</ul></details>` : '') +
     (any ? '' : '<p class="empty">Nothing with a date yet. Dates and check intervals you enter on items show up here.</p>') +
@@ -468,7 +471,7 @@ function render() {
   document.querySelectorAll('#nav a').forEach(l => {
     if (l.getAttribute('href') === '#' + S.view) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current');
   });
-  const dueSoon = live().filter(it => { const di = dueInfo(it); return di.days !== null && di.days < 30 && ((C.num(it.qty) || 0) > 0 || it.area === 'kit'); }).length;
+  const dueSoon = live().filter(it => { const di = dueInfo(it); return di.days !== null && di.days < (di.kind === 'check' ? CHECK_DAYS + 1 : 30) && ((C.num(it.qty) || 0) > 0 || it.area === 'kit'); }).length;
   const dn = document.querySelector('#nav a[href="#due"]');
   if (dn) { if (dueSoon) dn.dataset.badge = dueSoon > 99 ? '99+' : String(dueSoon); else delete dn.dataset.badge; }
   if (id) {
@@ -692,6 +695,32 @@ function openItem(id, preset) {
     if (last) { v.cap = last.cap; v.basis = `Same as your last one (${last.name}). Change it if this one differs.`; capAuto = true; }
   }
 
+  function placeHint() {
+    locWhy = '';
+    if (!isNew) return;
+    const sug = suggestLocation(v);
+    if (!locTouched) v.location = sug ? sug.loc : baseLoc;
+    locWhy = !sug ? '' : sug.loc === v.location ? `Suggested: ${sug.loc}. ${sug.why}` : `Suggested instead: ${sug.loc}. ${sug.why}`;
+  }
+  // Refreshes the worked-out fields in place. Redrawing the form here would take the cursor out of the field being typed in.
+  function hints() {
+    collect();
+    const wasAuto = capAuto;
+    preCap(); placeHint();
+    const set = (fid, x) => { const e = $('#' + fid, dlg); if (e && e.value !== String(x)) e.value = String(x); };
+    if (wasAuto || capAuto || $('#i-cap', dlg)?.value === '') set('i-cap', val(v.cap));
+    set('i-loc', v.location);
+    const b = $('#i-basis', dlg); if (b) b.textContent = v.basis || '';
+    const w = $('#i-locwhy', dlg); if (w) { w.textContent = locWhy; w.hidden = !locWhy; }
+  }
+  function calcLive() {
+    collect();
+    if (!perPack()) return;
+    const set = (fid, x) => { const e = $('#' + fid, dlg); if (e) e.value = String(x); };
+    set('i-kcal', val(v.kcal)); set('i-prot', val(v.protein)); set('c-w', calc.w);
+    const b = $('#i-basis', dlg); if (b) b.textContent = v.basis || '';
+    kwarn();
+  }
   let drawing = false;
   function draw() {
     if (drawing) return;            // replacing the form can fire a change event from the field that had focus
@@ -701,11 +730,7 @@ function openItem(id, preset) {
   function paint() {
     const a = areaOf(v.area);
     if (expanded) preCap();
-    if (expanded && isNew) {
-      const sug = suggestLocation(v);
-      if (!locTouched) v.location = sug ? sug.loc : baseLoc;
-      locWhy = !sug ? '' : sug.loc === v.location ? `Suggested: ${sug.loc}. ${sug.why}` : `Suggested instead: ${sug.loc}. ${sug.why}`;
-    }
+    if (expanded) placeHint();
     const types = v.area === 'food' ? s.foodCategories.map(c => ({ id: c, label: c })) : a.types;
     const tpl = isNew ? (TEMPLATES[v.area] || []) : [];
     const checks = `<div class="grid2">${N('i-checkm', 'Check or recharge every (months)', v.checkEveryMonths, 'step="1"')}
@@ -744,7 +769,7 @@ function openItem(id, preset) {
       ${F('i-name', 'Name', v.name)}
       <div class="grid2">${F('i-brand', 'Brand', v.brand)}${types.length > 1 ? SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : v.type) : ''}</div>
       <div class="grid2">${N('i-qty', 'How many you have', v.qty)}${SEL('i-loc', 'Location', s.locations.map(l => ({ id: l, label: l })), v.location)}</div>
-      ${locWhy ? `<p class="note sug" id="i-locwhy">${esc(locWhy)}</p>` : ''}
+      <p class="note sug" id="i-locwhy"${locWhy ? '' : ' hidden'}>${esc(locWhy)}</p>
       <div class="grid2"><label class="f">${v.area === 'medical' ? 'Expiry date' : 'Best before or expiry'}<input id="i-bb" type="date" value="${esc(v.bestBefore)}"></label>
         ${showSize() ? `<div class="grid2 tight">${N('i-size', 'Size of one unit', v.unitSize)}${SEL('i-unit', 'Unit', [{ id: 'g', label: 'g' }, { id: 'ml', label: 'ml' }, { id: 'pcs', label: 'pcs' }], v.unit)}</div>` : ''}</div>
       <div class="grid2"><label class="f">Or just the month<select id="i-bbm">${opt('', 'Month', '')}${MON.map((m, k) => opt(String(k + 1), m, '')).join('')}</select></label>
@@ -964,9 +989,9 @@ function openItem(id, preset) {
       const t = e.target;
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
-      else if (t.id === 'i-loc') { locTouched = true; collect(); draw(); }
-      else if (t.id === 'i-type' || t.id === 'i-cook' || ((t.id === 'i-size' || t.id === 'i-unit' || t.id === 'i-cap') && isNew)) { collect(); draw(); }
-      else if (['c-k', 'c-p', 'c-w'].includes(t.id)) { collect(); if (perPack()) { open.calc = true; draw(); } }
+      else if (t.id === 'i-loc') { locTouched = true; hints(); }
+      else if (['i-type', 'i-cook', 'i-size', 'i-unit', 'i-cap'].includes(t.id)) hints();
+      else if (['c-k', 'c-p', 'c-w'].includes(t.id)) calcLive();
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
         if (m && y) $('#i-bb', dlg).value = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;   // last day of that month
