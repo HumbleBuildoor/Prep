@@ -6,7 +6,7 @@ import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.11.1';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -511,6 +511,26 @@ dlg.addEventListener('close', () => {
   if (dlgCleanup) { dlgCleanup(); dlgCleanup = null; }
   dlg.innerHTML = '';
 });
+
+// Removing a location that still holds items: pick where each lot goes. Resolves to { old: new } or null if cancelled.
+function askRehome(gone, keep) {
+  return new Promise(resolve => {
+    let done = false;
+    openDlg(() => {
+      dlgCleanup = () => { if (!done) resolve(null); };
+      dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Move the items first</h2><button class="btn small" data-x="close">Cancel</button></div>
+        <p class="note">You are removing a location that still has items in it. Choose where they are kept now.</p>
+        ${gone.map((g, i) => `<label class="f">${plural(live().filter(it => it.location === g).length, 'item')} at ${esc(g)}: move to<select id="rh-${i}">${keep.map(k => opt(k, k, keep[0])).join('')}</select></label>`).join('')}
+        <div class="actions"><button class="btn primary" data-x="ok">Move and remove</button></div></div>`;
+      dlg.onclick = e => {
+        const b = e.target.closest('[data-x]');
+        if (!b) return;
+        if (b.dataset.x === 'ok') { done = true; const map = {}; gone.forEach((g, i) => { map[g] = $('#rh-' + i, dlg).value; }); dlg.close(); resolve(map); }
+        else dlg.close();
+      };
+    });
+  });
+}
 
 // ---------- use / restock ----------
 function openUse(id) {
@@ -1377,7 +1397,22 @@ main.addEventListener('submit', async e => {
     let locs = lines('s-locs'), cats = lines('s-fcats');
     const usedL = [...new Set(live().map(i => i.location).filter(Boolean))].filter(x => !locs.includes(x));
     const usedC = [...new Set(live().filter(i => i.area === 'food').map(i => i.category).filter(Boolean))].filter(x => !cats.includes(x));
+    let moved = 0;
+    if (usedL.length && locs.length) {
+      // A removed location that still holds items: ask where those items go, then move them.
+      const map = await askRehome(usedL, locs);
+      if (map) {
+        const ok = await guard(async () => {
+          for (const it of live().filter(i => map[i.location])) { await commit({ ...it, location: map[it.location] }, 'MOVE', 0); moved++; }
+          S.scenarios = S.scenarios.map(x => (Array.isArray(x.locations) ? { ...x, locations: x.locations.filter(l => !map[l]) } : x));
+          await saveScenarios();
+        });
+        if (!ok) return;
+        usedL.length = 0;
+      }
+    }
     if (usedL.length || usedC.length) { locs = locs.concat(usedL); cats = cats.concat(usedC); toast('Kept because items still use them: ' + usedL.concat(usedC).join(', ')); }
+    else if (moved) toast(`Location removed. ${plural(moved, 'item')} moved.`);
     Object.assign(S.settings, {
       adults: Math.round(g('s-adults') ?? 1), dogs: Math.round(g('s-dogs') ?? 0), cats: Math.round(g('s-cats') ?? 0),
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
@@ -1387,7 +1422,7 @@ main.addEventListener('submit', async e => {
       proteinLimits: $('#s-protlim').checked, countExpired: $('#s-expired').checked,
       locations: locs.length ? locs : DEFAULT_SETTINGS.locations.slice(), foodCategories: cats.length ? cats : DEFAULT_SETTINGS.foodCategories.slice(),
     });
-    if (await guard(saveSettings)) { refresh(); if (!usedL.length && !usedC.length) toast('Saved.'); }
+    if (await guard(saveSettings)) { refresh(); if (!usedL.length && !usedC.length && !moved) toast('Saved.'); }
   } else if (e.target.id === 'key-form') {
     const key = $('#k-key').value.trim();
     S.settings.apiModel = $('#k-model').value;
