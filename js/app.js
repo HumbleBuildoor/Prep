@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -183,6 +183,12 @@ function capText(it) {
   }
 }
 
+const SOURCE_PILL = { LABEL: ['p-label', 'Label'], ONLINE: ['p-ref', 'Similar product'], GENERIC: ['p-ref', 'Generic figure'] };
+function sourcePill(source) {
+  const [cls, label] = SOURCE_PILL[source] || ['p-estimate', 'Estimate'];
+  return `<span class="pill ${cls}">${label}</span>`;
+}
+
 function isLow(it) {
   const q = C.num(it.qty) || 0, m = C.num(it.minQty);
   return q === 0 || (m !== null && q < m);
@@ -198,7 +204,7 @@ function rowHTML(it) {
   const chips = [
     `<span class="pill p-area">${esc(a.short)}${kind ? ' · ' + esc(kind) : ''}</span>`,
     di.label ? `<span class="pill p-${di.cls}">${esc(di.label)}</span>` : '',
-    it.area === 'food' && C.num(it.kcal) !== null ? (it.source === 'LABEL' ? '<span class="pill p-label">Label</span>' : '<span class="pill p-estimate">Estimate</span>') : '',
+    it.area === 'food' && C.num(it.kcal) !== null ? sourcePill(it.source) : '',
     miss.length ? '<span class="pill p-draft">Needs details</span>' : '',
     isLow(it) ? `<span class="pill p-expired">${(C.num(it.qty) || 0) === 0 ? 'Out' : 'Low'}</span>` : '',
   ].join('');
@@ -286,7 +292,8 @@ function filtered() {
     if (f.st === 'draft') return C.missing(it).length > 0;
     if (f.st === 'uncounted') return !it.confirmed;
     if (f.st === 'low') return isLow(it);
-    if (f.st === 'estimate') return it.area === 'food' && C.num(it.kcal) !== null && it.source !== 'LABEL';
+    if (f.st === 'estimate') return it.area === 'food' && C.num(it.kcal) !== null && !['LABEL', 'ONLINE', 'GENERIC'].includes(it.source);
+    if (f.st === 'notlabel') return it.area === 'food' && C.num(it.kcal) !== null && it.source !== 'LABEL';
     if (f.st) return dueInfo(it).cls === f.st;
     return true;
   });
@@ -305,7 +312,7 @@ function viewSupplies() {
   return `<div class="chiprow" role="group" aria-label="Area">${chip('', 'All')}${AREAS.map(a => chip(a.id, a.short)).join('')}</div>
     <div class="filters"><input type="search" id="f-q" data-f="q" placeholder="Search name, brand or notes" value="${esc(f.q)}" aria-label="Search">
       <select id="f-loc" data-f="loc" aria-label="Location">${opt('', 'All locations', f.loc)}${s.locations.map(l => opt(l, l, f.loc)).join('')}</select>
-      <select id="f-st" data-f="st" aria-label="Status">${opt('', 'Any status', f.st)}${opt('expired', 'Past date or check overdue', f.st)}${opt('eatfirst', 'Use first', f.st)}${opt('soon', 'Soon', f.st)}${opt('nodate', 'No date', f.st)}${opt('low', 'Low or out', f.st)}${opt('draft', 'Needs details', f.st)}${opt('uncounted', 'Quantity not counted', f.st)}${opt('estimate', 'Nutrition is an estimate', f.st)}</select>
+      <select id="f-st" data-f="st" aria-label="Status">${opt('', 'Any status', f.st)}${opt('expired', 'Past date or check overdue', f.st)}${opt('eatfirst', 'Use first', f.st)}${opt('soon', 'Soon', f.st)}${opt('nodate', 'No date', f.st)}${opt('low', 'Low or out', f.st)}${opt('draft', 'Needs details', f.st)}${opt('uncounted', 'Quantity not counted', f.st)}${opt('estimate', 'Nutrition is an estimate', f.st)}${opt('notlabel', 'Nutrition not from the label', f.st)}</select>
       <select id="f-sort" data-f="sort" aria-label="Sort">${opt('due', 'Due first', f.sort)}${opt('name', 'Name', f.sort)}${opt('recent', 'Recently changed', f.sort)}</select></div>
     <p class="note">${list.length} of ${total} items</p>
     ${list.length ? '<ul class="rows">' + list.map(rowHTML).join('') + '</ul>' : `<p class="empty">${total ? 'Nothing matches these filters.' : 'No items yet. Tap Add item to log the first one.'}</p>`}`;
@@ -559,6 +566,8 @@ function openItem(id, preset) {
           <div class="actions start gap-top"><button class="btn small" type="button" data-x="calc">Fill in per-pack figures</button></div></details>
         <p class="note" id="i-basis">${esc(v.basis)}</p>
         <label class="c"><input type="radio" name="i-src" value="LABEL"${v.source === 'LABEL' ? ' checked' : ''}><span>Copied from the pack label, and I checked it</span></label>
+        <label class="c"><input type="radio" name="i-src" value="ONLINE"${v.source === 'ONLINE' ? ' checked' : ''}><span>From a similar product found online</span></label>
+        <label class="c"><input type="radio" name="i-src" value="GENERIC"${v.source === 'GENERIC' ? ' checked' : ''}><span>A generic reference figure, for example USDA</span></label>
         <label class="c"><input type="radio" name="i-src" value="ESTIMATE"${v.source === 'ESTIMATE' ? ' checked' : ''}><span>This is an estimate</span></label>
         <label class="c"><input id="i-cook" type="checkbox"${v.needsCooking ? ' checked' : ''}><span>Needs cooking or boiling water</span></label>
         <div id="i-kwarn"></div></fieldset>`;
@@ -738,7 +747,7 @@ function openItem(id, preset) {
     const photos = kept().length + pending.length;
     if (qty === null || qty < 0) problems.push('Enter how many you have, 0 or more.');
     if (!String(v.name).trim() && !photos) problems.push('Give it a name, or add a photo and fill in the rest later.');
-    if (v.area === 'food' && (v.kcal !== '' || v.protein !== '') && !v.source) problems.push('Say whether the nutrition figures come from the label or are an estimate.');
+    if (v.area === 'food' && (v.kcal !== '' || v.protein !== '') && !v.source) problems.push('Say where the nutrition figures come from.');
     if (problems.length) { err = problems.join(' '); draw(); const e = $('#i-err', dlg); if (e) e.scrollIntoView({ block: 'center' }); return; }
     const btn = $('#i-save', dlg);
     if (btn) btn.disabled = true;

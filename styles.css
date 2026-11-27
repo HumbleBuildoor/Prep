@@ -84,6 +84,7 @@ details.fold > ul { margin-top: 8px; }
 .p-soon { background: var(--soon-soft); color: var(--soon); } .p-ok { background: var(--ok-soft); color: var(--ok); }
 .p-nodate, .p-plain, .p-area { background: var(--line); color: var(--ink); }
 .p-label { border: 1px solid var(--ok); color: var(--ok); } .p-estimate { border: 1px solid var(--warn); color: var(--warn); }
+.p-ref { border: 1px solid var(--info); color: var(--info); }
 .p-draft { border: 1px dashed var(--info); color: var(--info); }
 
 .ration { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

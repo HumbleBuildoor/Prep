@@ -271,7 +271,7 @@ export function totals(items) {
     if (it.area === 'food') {
       t.kcal += q * (num(it.kcal) || 0);
       t.protein += q * (num(it.protein) || 0);
-      if (num(it.kcal) !== null && it.source !== 'LABEL') t.estimates++;
+      if (num(it.kcal) !== null && !['LABEL', 'ONLINE', 'GENERIC'].includes(it.source)) t.estimates++;
     } else if (it.area === 'water') t.water += q * cap;
     else if (it.area === 'fuel') t.fuel += q * cap;
     else if (it.area === 'power') t.power += q * cap;
