@@ -113,5 +113,5 @@ export const SOURCES = [
     url: 'https://www.cdc.gov/water-emergency/about/how-to-create-and-store-an-emergency-water-supply.html', from: 'CDC' },
 ];
 
-// The household's relay (a Cloudflare Worker). It only ever receives encrypted data. Empty until one is set up.
-export const RELAY_URL = '';
+// The household's relay (a Cloudflare Worker). It only ever receives encrypted data. It can be changed when starting sync.
+export const RELAY_URL = 'https://prep-relay.joshuamoh9901xs.workers.dev';

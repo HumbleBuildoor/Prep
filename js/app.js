@@ -7,7 +7,7 @@ import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.12.1';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
