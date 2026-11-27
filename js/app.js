@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -586,11 +586,11 @@ function openItem(id, preset) {
       ${SEL('i-area', 'Area', AREAS.map(x => ({ id: x.id, label: x.name })), v.area)}
       ${tpl.length ? `<div class="chiprow" role="group" aria-label="Quick fill">${tpl.map((t, i) => `<button class="chip" type="button" data-x="tpl" data-i="${i}">${esc(t.label)}</button>`).join('')}</div>` : ''}
       <fieldset><legend>Photos</legend><div class="photos" id="ph"></div>
-        <div class="actions start"><label class="btn" for="i-cam">Take photo</label><input class="vh" id="i-cam" type="file" accept="image/*" capture="environment">
+        <div class="actions start"><input class="vh" id="i-cam" type="file" accept="image/*" capture="environment">
           <label class="btn" for="i-gal">Choose photos</label><input class="vh" id="i-gal" type="file" accept="image/*" multiple>
           <button class="btn primary" type="button" data-x="read" id="i-read">Read label</button></div>
-        <p class="note">${S.apiKey ? 'Up to 3 photos: front of pack, nutrition or specification panel, date. Reading sends them to Anthropic with your key. Unreadable fields are left blank, never guessed.'
-          : 'Up to 3 photos. To have Claude read the label, add your API key under More. Without it, type the details, now or later.'}</p>
+        <p class="note">${S.apiKey ? 'Use the camera button at the bottom right. Up to 3 photos: front of pack, nutrition or specification panel, date. Reading sends them to Anthropic with your key. Unreadable fields are left blank, never guessed.'
+          : 'Use the camera button at the bottom right. Up to 3 photos. To have Claude read the label, add your API key under More. Without it, type the details, now or later.'}</p>
         <div id="i-note">${note ? `<div class="banner ${note.cls}"><span>${esc(note.text)}</span></div>` : ''}</div></fieldset>
       <div id="i-match"></div>
       ${F('i-name', 'Name', v.name)}
@@ -605,6 +605,7 @@ function openItem(id, preset) {
         ${N('i-min', 'Minimum to keep (flags it as low below this)', v.minQty)}${F('i-bar', 'Barcode number', v.barcode, 'inputmode="numeric"')}</div>
         ${checksUp ? '' : `<div class="gap-top">${checks}</div>`}
         <label class="f gap-top">Notes<textarea id="i-notes">${esc(v.notes)}</textarea></label></details>
+      <div class="fabwrap"><label class="fab" for="i-cam"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Photo</span></label></div>
       <div id="i-err">${err ? `<div class="banner bad"><span>${esc(err)}</span></div>` : ''}</div>
       <div class="actions">${isNew ? '' : '<button class="btn danger" type="button" data-x="del">Delete</button><button class="btn" type="button" data-x="batch">New batch</button>'}<button class="btn primary" type="submit" id="i-save">Save</button></div></form>`;
     paintPhotos(); kwarn(); match();

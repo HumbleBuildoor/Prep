@@ -183,3 +183,8 @@ details summary { cursor: pointer; font-size: 15px; font-weight: 500; min-height
 .meal li span:last-child { color: var(--muted); text-align: right; flex: none; max-width: 50%; }
 details.day { border-top: 1px solid var(--line); padding-top: 8px; }
 details.day[open] { display: flex; flex-direction: column; gap: 10px; }
+
+/* The camera button stays at the bottom right of the add form while it scrolls, within thumb reach. */
+.fabwrap { position: sticky; bottom: 12px; display: flex; justify-content: flex-end; pointer-events: none; z-index: 2; }
+.fab { pointer-events: auto; width: 76px; height: 76px; border-radius: 18px; background: var(--accent); color: var(--accent-ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, .3); }
+.fab:active { transform: scale(.96); }
