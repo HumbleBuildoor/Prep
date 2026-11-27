@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -266,6 +266,10 @@ function viewReady() {
       <span class="verdict">${v.verdict}</span>${v.chips ? `<span class="chips">${v.chips}</span>` : ''}</button></li>`;
   }).join('') + `</ul><div class="actions start"><button class="btn small" data-act="scn-new">Add scenario</button></div>`;
 
+  if (items.some(i => i.area === 'food')) {
+    h += `<div class="card"><h2>Meals from your stock</h2><p class="note">Builds breakfast, lunch, dinner and a snack from what you have, oldest first, to your ration and protein targets.</p>
+      <div class="actions start"><button class="btn primary" data-act="meals">Plan meals</button></div></div>`;
+  }
   const gs = C.gaps(S.scenarios, items, s, today(), typeLabel);
   h += `<div class="card"><h2>To cover every scenario</h2>` + (gs.length ? `<ul class="gaps">` + gs.map(g =>
     `<li><span class="g-what"><b>${esc(g.needName)}${g.label && g.label !== g.needName && g.need !== 'water' && g.need !== 'fuel' && g.need !== 'power' ? ': ' + esc(g.label) : ''}</b>
@@ -911,6 +915,64 @@ function openScenarioEdit(id) {
   });
 }
 
+// ---------- meal planner ----------
+function openMeals() {
+  const s = S.settings;
+  const bagLocs = [...new Set(S.scenarios.filter(x => x.place === 'away').flatMap(x => (Array.isArray(x.locations) ? x.locations : [])))];
+  const state = { canCook: true, skipBags: bagLocs.length > 0 };
+  const kcal = s.rationLevel === 'standard' ? s.kcalStandard : s.kcalSurvival;
+  const qtyText = l => {
+    const packs = Math.round(l.packs * 100) / 100, whole = Math.abs(packs - Math.round(packs)) < 0.005;
+    if (whole) return plural(Math.round(packs), 'pack');
+    return l.unitSize && (l.unit === 'g' || l.unit === 'ml') ? `${n0(l.packs * l.unitSize)} ${l.unit} (${packs} of a pack)` : `${packs} of a pack`;
+  };
+  const mealHTML = m => `<div class="meal"><h3>${esc(m.name)} <small>${n0(m.kcal)} kcal · ${n0(m.protein)} g protein</small></h3><ul>${m.lines.map(l =>
+    `<li><span>${esc(l.name)}</span><span>${esc(qtyText(l))}</span></li>`).join('')}</ul></div>`;
+  const dayFlags = d => (d.full ? '' : '<span class="pill p-eatfirst">Short</span>') + (d.proteinMet ? '' : '<span class="pill p-soon">Low protein</span>') + (d.mostlySugar ? '<span class="pill p-expired">Mostly sugar</span>' : '');
+  let plan = null;
+  const draw = () => {
+    const locations = state.skipBags ? s.locations.filter(l => !bagLocs.includes(l)) : null;
+    plan = C.planMeals(live(), s, today(), { kcalPerAdult: kcal, canCook: state.canCook, locations });
+    const d1 = plan.days[0];
+    const protDays = plan.days.filter(d => d.proteinMet).length;
+    dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Meals from your stock</h2><button class="btn small" data-x="close">Close</button></div>
+      <p class="note">${esc(plural(s.adults, 'adult'))} at ${n0(kcal)} kcal each a day (${n0(plan.target)} kcal), ${n0(plan.proteinTarget)} g protein. Oldest stock is used first.</p>
+      <label class="c"><input id="m-cook" type="checkbox"${state.canCook ? ' checked' : ''}><span>We can cook (fuel or power is available)</span></label>
+      ${bagLocs.length ? `<label class="c"><input id="m-bags" type="checkbox"${state.skipBags ? ' checked' : ''}><span>Leave the grab bags alone (${esc(bagLocs.join(', '))})</span></label>` : ''}
+      ${d1 ? `<div class="banner info"><span>This stock makes ${plural(plan.days.length, 'day')} of meals, ${plan.fullDays} of them at the full ration in a row. The protein target is met on ${plural(protDays, 'day')}.${plan.leftoverKcal > 500 ? ` About ${n0(plan.leftoverKcal)} kcal is left over after that, mostly oil or scraps.` : ''}</span></div>
+        <h2 class="sect">Today ${dayFlags(d1)}</h2>${d1.meals.map(mealHTML).join('')}
+        <p class="note">Day total: ${n0(d1.kcal)} kcal and ${n0(d1.protein)} g protein.</p>
+        <div class="actions"><button class="btn primary" data-x="eat">Log today's meals as eaten</button></div>
+        ${plan.days.slice(1).map(d => `<details class="day"><summary>Day ${d.day} · ${n0(d.kcal)} kcal · ${n0(d.protein)} g protein ${dayFlags(d)}</summary>${d.meals.map(mealHTML).join('')}</details>`).join('')}`
+      : '<div class="banner warn"><span>There is not enough food with a kcal figure to make a day of meals under these settings.</span></div>'}</div>`;
+  };
+  openDlg(() => {
+    draw();
+    dlg.onchange = e => {
+      if (e.target.id === 'm-cook') { state.canCook = e.target.checked; draw(); }
+      else if (e.target.id === 'm-bags') { state.skipBags = e.target.checked; draw(); }
+    };
+    dlg.onclick = async e => {
+      const b = e.target.closest('[data-x]');
+      if (!b) return;
+      if (b.dataset.x === 'close') return dlg.close();
+      const d1 = plan.days[0];
+      const use = new Map();
+      for (const m of d1.meals) for (const l of m.lines) use.set(l.id, (use.get(l.id) || 0) + l.packs);
+      if (!(await ask(`Log today's meals as eaten? This takes ${plural(use.size, 'item')} out of stock.`, 'Log as eaten', false))) return;
+      const ok = await guard(async () => {
+        for (const [id, packs] of use) {
+          const it = S.items.find(x => x.id === id);
+          if (!it) continue;
+          const have = C.num(it.qty) || 0, delta = -Math.min(round3(packs), have);
+          if (delta < 0) await commit({ ...it, qty: round3(have + delta) }, 'USE', delta);
+        }
+      });
+      if (ok) { dlg.close(); refresh(); toast(`Logged ${plural(use.size, 'item')} as eaten.`); }
+    };
+  });
+}
+
 // ---------- backup ----------
 async function exportBackup(withPhotos) {
   const data = { app: 'prep', format: 1, exportedAt: nowISO(), deviceId: S.deviceId, settings: S.settings, scenarios: S.scenarios, items: S.items, events: S.events };
@@ -988,6 +1050,7 @@ document.addEventListener('click', async e => {
     case 'checked': markChecked(id); break;
     case 'scn': openScenario(id); break;
     case 'scn-new': openScenarioEdit(null); break;
+    case 'meals': openMeals(); break;
     case 'area': S.f.area = b.dataset.v; render(); break;
     case 'ration': S.settings.rationLevel = b.dataset.v; await guard(saveSettings); render(); break;
     case 'backup': await guard(() => exportBackup($('#b-photos').checked)); break;

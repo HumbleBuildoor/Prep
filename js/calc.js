@@ -303,3 +303,131 @@ export function foodCSV(items, s, today) {
   }
   return rows.join('\n');
 }
+
+// ---------- meal planner ----------
+// Builds meals from what is in stock, day by day, until it runs out. Rule-based, so it works offline
+// and always gives the same answer for the same stock.
+
+const ROLE_BY_CATEGORY = {
+  'rice & grains': 'staple', 'noodles & porridge': 'staple', 'crackers & biscuits': 'staple',
+  'protein (canned)': 'protein', 'soups': 'protein', 'vegetables': 'veg', 'fruit & snacks': 'snack',
+  'honey & sweeteners': 'sweet', 'beverages': 'drink',
+};
+
+export function mealRole(item, s) {
+  const cat = String(item.category || '');
+  if (cat && cat === s.oilCategory) return 'oil';
+  const known = ROLE_BY_CATEGORY[cat.toLowerCase()];
+  if (known) return known;
+  const k = num(item.kcal) || 0, p = num(item.protein) || 0;
+  if (k > 0 && p * 4 / k >= 0.25) return 'protein';     // a category the app does not know: judge by what is in it
+  return item.needsCooking ? 'staple' : 'snack';
+}
+
+const SLOTS = [
+  { name: 'Breakfast', share: 0.25, roles: [['staple', 0.5], ['drink', 0.3], ['sweet', 0.2]] },
+  { name: 'Lunch', share: 0.30, roles: [['protein', 0.35], ['staple', 0.5], ['veg', 0.15]] },
+  { name: 'Dinner', share: 0.30, roles: [['protein', 0.35], ['staple', 0.5], ['veg', 0.15]] },
+  { name: 'Snack', share: 0.15, roles: [['snack', 0.7], ['drink', 0.3]] },
+];
+const FALLBACK = ['staple', 'snack', 'drink', 'veg', 'sweet', 'protein'];   // protein is scarce, so it is the last resort for filling up
+
+/**
+ * opts: { kcalPerAdult, canCook = true, maxDays = 60, locations? }
+ * Returns { days: [{ day, meals: [{ name, lines: [{ id, name, packs, kcal, protein }] }], kcal, protein, full, proteinMet }],
+ *           target, proteinTarget, fullDays, proteinDays, leftoverKcal }
+ */
+export function planMeals(items, s, today, opts) {
+  const o = Object.assign({ canCook: true, maxDays: 60 }, opts || {});
+  const adults = Math.max(0, num(s.adults) || 0);
+  const D = adults * (num(o.kcalPerAdult) || 0), P = adults * (num(s.proteinPerDay) || 0);
+  const cap = Math.min(0.9, Math.max(0, num(s.oilCap) || 0));
+  const pool = [];
+  for (const it of items) {
+    if (it.deleted || it.area !== 'food') continue;
+    const q = num(it.qty) || 0, k = num(it.kcal) || 0;
+    if (q <= 0 || k <= 0) continue;
+    if (Array.isArray(o.locations) && o.locations.length && !o.locations.includes(it.location)) continue;
+    const d = daysLeft(it.bestBefore, today);
+    if (d !== null && d < 0 && !s.countExpired) continue;
+    if (it.needsCooking && !o.canCook) continue;
+    const n = k <= 700 ? 1 : Math.ceil(k / 450);          // big packs are eaten in portions of about 450 kcal
+    pool.push({ it, role: mealRole(it, s), left: q, step: 1 / n, kcal: k, protein: num(it.protein) || 0,
+      order: it.bestBefore || '0000-00-00' });              // undated stock is treated as the oldest
+  }
+  pool.sort((a, b) => a.order.localeCompare(b.order) || String(a.it.name).localeCompare(String(b.it.name)));
+  const roleOf = new Map(pool.map(p => [p.it.id, p.role]));
+  const startKcal = pool.reduce((a, p) => a + p.left * p.kcal, 0);
+  const hasOil = pool.some(p => p.role === 'oil');
+  const foodTarget = hasOil ? D * (1 - cap) : D;
+  const days = [];
+  if (D <= 0) return { days, target: D, proteinTarget: P, fullDays: 0, proteinDays: 0, leftoverKcal: 0 };
+
+  const take = (meal, entry) => {
+    const packs = Math.min(entry.step, entry.left);
+    entry.left = Math.round((entry.left - packs) * 1e6) / 1e6;
+    let line = meal.lines.find(l => l.id === entry.it.id);
+    if (!line) { line = { id: entry.it.id, name: entry.it.name, unitSize: num(entry.it.unitSize), unit: entry.it.unit, packs: 0, kcal: 0, protein: 0 }; meal.lines.push(line); }
+    line.packs = Math.round((line.packs + packs) * 1e6) / 1e6;
+    line.kcal += packs * entry.kcal; line.protein += packs * entry.protein;
+    meal.kcal += packs * entry.kcal; meal.protein += packs * entry.protein;
+    return packs * entry.kcal;
+  };
+  const fits = (kcalSoFar, e, limit) => kcalSoFar + Math.min(e.step, e.left) * e.kcal <= limit;
+  // The oldest item of a role that still fits under the limit (so one large pack does not block a smaller one).
+  const pick = (role, kcalSoFar, limit, prefer) => {
+    const ok = p => p.role === role && p.left > 1e-9 && fits(kcalSoFar, p, limit);
+    return (prefer && pool.find(p => ok(p) && prefer(p))) || pool.find(ok);
+  };
+  const next = role => pool.find(p => p.role === role && p.left > 1e-9);
+
+  for (let day = 1; day <= o.maxDays; day++) {
+    const meals = SLOTS.map(sl => ({ name: sl.name, lines: [], kcal: 0, protein: 0 }));
+    let dayProtein = 0, proteinDue = 0;
+    SLOTS.forEach((sl, i) => {
+      const meal = meals[i], budget = foodTarget * sl.share;
+      const hasProteinRole = sl.roles.some(r => r[0] === 'protein');
+      if (hasProteinRole) proteinDue += P / 2;              // lunch and dinner each carry half the day's protein
+      for (const [role, share] of sl.roles) {
+        let got = 0, e;
+        // Breakfast prefers a staple that needs no cooking. Protein is added until the day's protein is on track.
+        const prefer = role === 'staple' && sl.name === 'Breakfast' ? p => !p.it.needsCooking : null;
+        const want = () => (role === 'protein' && P > 0 ? dayProtein < proteinDue : got < budget * share);
+        while (want() && (e = pick(role, meal.kcal, budget * 1.1, prefer))) {
+          const before = meal.protein; got += take(meal, e); dayProtein += meal.protein - before;
+        }
+      }
+      for (const role of FALLBACK) {                        // top up when a role has run out
+        let e;
+        while (meal.kcal < budget * 0.92 && (e = pick(role, meal.kcal, budget * 1.15))) {
+          const before = meal.protein; take(meal, e); dayProtein += meal.protein - before;
+        }
+      }
+    });
+    let kcal = meals.reduce((a, m) => a + m.kcal, 0);
+    for (const role of FALLBACK) {                          // last pass: close the gap left by portion sizes
+      let e;
+      while (kcal < foodTarget * 0.97 && (e = pick(role, kcal, foodTarget * 1.04))) kcal += take(meals[3], e);
+    }
+    if (hasOil && kcal > 0) {                                // oil goes over the meals, up to its cap
+      const oilMeal = { name: 'Oil over the meals', lines: [], kcal: 0, protein: 0 };
+      const allow = Math.min(kcal * cap / (1 - cap), Math.max(0, D - kcal));
+      let e;
+      while ((e = next('oil')) && oilMeal.kcal < allow) {
+        const want = Math.min((allow - oilMeal.kcal) / e.kcal, e.left);
+        if (want <= 1e-6) break;
+        const saved = e.step; e.step = want; take(oilMeal, e); e.step = saved;
+      }
+      if (oilMeal.kcal > 0) { meals.push(oilMeal); kcal += oilMeal.kcal; }
+    }
+    const protein = meals.reduce((a, m) => a + m.protein, 0);
+    if (kcal < D * 0.5) break;                               // not enough left to call it a day of food
+    const sweetKcal = meals.reduce((a, m) => a + m.lines.reduce((x, l) => x + (roleOf.get(l.id) === 'sweet' ? l.kcal : 0), 0), 0);
+    days.push({ day, meals: meals.filter(m => m.lines.length), kcal, protein, full: kcal >= D * 0.95, proteinMet: P <= 0 || protein >= P * 0.95,
+      mostlySugar: sweetKcal > kcal * 0.5 });
+  }
+  let fullDays = 0; while (fullDays < days.length && days[fullDays].full) fullDays++;
+  let proteinDays = 0; while (proteinDays < days.length && days[proteinDays].proteinMet) proteinDays++;
+  const leftoverKcal = Math.max(0, startKcal - days.reduce((a, d) => a + d.kcal, 0));
+  return { days, target: D, proteinTarget: P, fullDays, proteinDays, leftoverKcal };
+}

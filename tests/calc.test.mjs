@@ -152,3 +152,37 @@ test('missing details and CSV columns', () => {
   assert.equal(csv.length, 2);
   assert.equal(csv[1], '"Rice, ""long"" grain",B,Rice & Grains,1000,g,3,Y,3600,10800,70,210,2027-01-01,35,EAT FIRST <90d,Home,');
 });
+
+test('meal planner: fills each day to the target, eats the oldest first, respects cooking and the oil cap', () => {
+  const stock = [
+    food({ id: 'rice', name: 'Rice 1kg', kcal: 3600, protein: 66, qty: 2, needsCooking: true, bestBefore: '' }),
+    food({ id: 'tunaOld', name: 'Tuna', kcal: 150, protein: 21, qty: 6, category: 'Protein (canned)', bestBefore: '2027-01-01' }),
+    food({ id: 'tunaNew', name: 'Tuna', kcal: 150, protein: 21, qty: 6, category: 'Protein (canned)', bestBefore: '2028-01-01' }),
+    food({ id: 'crackers', name: 'Crackers', kcal: 1800, protein: 28, qty: 2, category: 'Crackers & Biscuits', bestBefore: '2027-06-01' }),
+    food({ id: 'nuts', name: 'Nuts', kcal: 1040, protein: 30, qty: 2, category: 'Fruit & Snacks', bestBefore: '2027-06-01' }),
+    food({ id: 'oil', name: 'Olive oil', kcal: 4120, protein: 0, qty: 1, category: 'Oil & Fat', bestBefore: '2028-01-01' }),
+    food({ id: 'salt', name: 'Salt', kcal: 0, qty: 1, category: 'Seasoning' }),
+    { area: 'water', id: 'w', qty: 5, cap: 1.5 },
+  ];
+  const r = C.planMeals(stock, S, TODAY, { kcalPerAdult: 1600 });
+  assert.equal(r.target, 3200);
+  assert.ok(r.days.length >= 4, 'plans several days');
+  const d1 = r.days[0];
+  assert.ok(d1.full && d1.kcal <= 3200 * 1.12, `day 1 is near the target, got ${d1.kcal}`);
+  assert.deepEqual(d1.meals.map(m => m.name).slice(0, 4), ['Breakfast', 'Lunch', 'Dinner', 'Snack']);
+  const ids = d1.meals.flatMap(m => m.lines.map(l => l.id));
+  const packsOf = id => d1.meals.reduce((a, m) => a + m.lines.filter(l => l.id === id).reduce((x, l) => x + l.packs, 0), 0);
+  assert.ok(ids.includes('tunaOld') && (!ids.includes('tunaNew') || packsOf('tunaOld') === 6), 'the older batch is used up before the newer one is touched');
+  assert.ok(d1.proteinMet, `day 1 meets the protein target, got ${d1.protein}`);
+  assert.ok(!ids.includes('salt') && !ids.includes('w'), 'only food with calories is planned');
+  const oil = d1.meals.find(m => m.name === 'Oil over the meals');
+  assert.ok(oil && oil.kcal <= d1.kcal * 0.1 + 1, 'oil stays within 10% of the day');
+  const used = {}; for (const d of r.days) for (const m of d.meals) for (const l of m.lines) used[l.id] = (used[l.id] || 0) + l.packs;
+  for (const it of stock) if (used[it.id]) assert.ok(used[it.id] <= it.qty + 1e-6, `${it.id} is not over-used`);
+  const total = r.days.reduce((a, d) => a + d.kcal, 0) + r.leftoverKcal;
+  near(total, stock.reduce((a, i) => a + (i.area === 'food' ? i.qty * (i.kcal || 0) : 0), 0), 1e-3);   // nothing lost or invented
+  const noCook = C.planMeals(stock, S, TODAY, { kcalPerAdult: 1600, canCook: false });
+  assert.ok(!noCook.days.some(d => d.meals.some(m => m.lines.some(l => l.id === 'rice'))), 'no rice without a way to cook');
+  assert.ok(noCook.days.length < r.days.length);
+  assert.equal(C.planMeals([], S, TODAY, { kcalPerAdult: 1600 }).days.length, 0);
+});
