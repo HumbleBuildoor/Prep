@@ -1,6 +1,6 @@
 // Service worker: keeps a copy of the app on the device so it opens with no connection.
 // VERSION changes whenever any app file changes (tools/stamp.py), which is how installed copies pick up an update.
-const VERSION = "282877b3053d";
+const VERSION = "50bc1ddcd5d0";
 const CACHE = 'prep-' + VERSION;
 const FILES = ["./", "./index.html", "./styles.css", "./manifest.webmanifest", "./js/app.js", "./js/calc.js", "./js/db.js", "./js/defaults.js", "./js/reader.js", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./fonts/bc-600.woff2", "./fonts/bc-700.woff2"];
 

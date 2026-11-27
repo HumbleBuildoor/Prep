@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -530,6 +530,8 @@ function openItem(id, preset) {
   const calc = { k: '', p: '', w: '' };
   const open = { more: false, calc: false };
   let existing = [], pending = [], note = null, err = '', reading = false, areaTouched = !isNew || !!preset;
+  // A new item starts as photo-only. The full form opens once a read comes back, or when typing by hand is chosen.
+  let expanded = !isNew || !!preset, readAgain = false, alive = true;
   const removed = new Set(), urls = [];
   const origK = orig ? String(val(orig.kcal)) : null, origP = orig ? String(val(orig.protein)) : null;
   const kept = () => existing.filter(p => !removed.has(p.id));
@@ -589,22 +591,24 @@ function openItem(id, preset) {
         <div class="actions start"><input class="vh" id="i-cam" type="file" accept="image/*" capture="environment">
           <label class="btn" for="i-gal">Choose photos</label><input class="vh" id="i-gal" type="file" accept="image/*" multiple>
           <button class="btn primary" type="button" data-x="read" id="i-read">Read label</button></div>
-        <p class="note">${S.apiKey ? 'Use the camera button at the bottom right. Up to 3 photos: front of pack, nutrition or specification panel, date. Reading sends them to Anthropic with your key. Unreadable fields are left blank, never guessed.'
-          : 'Use the camera button at the bottom right. Up to 3 photos. To have Claude read the label, add your API key under More. Without it, type the details, now or later.'}</p>
+        <p class="note">${S.apiKey ? 'Tap the camera button at the bottom right. The label is read as soon as a photo is added, and the form opens for you to check. Up to 3 photos: front of pack, nutrition panel, date. Photos go to Anthropic with your key. Unreadable fields are left blank, never guessed.'
+          : 'Tap the camera button at the bottom right. Up to 3 photos. To have Claude read the label, add your API key under More. Without it, type the details, now or later.'}</p>
         <div id="i-note">${note ? `<div class="banner ${note.cls}"><span>${esc(note.text)}</span></div>` : ''}</div></fieldset>
-      <div id="i-match"></div>
+      ${expanded ? `      <div id="i-match"></div>
       ${F('i-name', 'Name', v.name)}
       <div class="grid2">${F('i-brand', 'Brand', v.brand)}${SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : v.type)}</div>
       <div class="grid2">${N('i-qty', 'How many you have', v.qty)}${SEL('i-loc', 'Location', s.locations.map(l => ({ id: l, label: l })), v.location)}</div>
       <div class="grid2"><label class="f">${v.area === 'medical' ? 'Expiry date' : 'Best before or expiry'}<input id="i-bb" type="date" value="${esc(v.bestBefore)}"></label>
         <div class="grid2 tight">${N('i-size', 'Size of one unit', v.unitSize)}${SEL('i-unit', 'Unit', [{ id: 'g', label: 'g' }, { id: 'ml', label: 'ml' }, { id: 'pcs', label: 'pcs' }], v.unit)}</div></div>
+      <div class="grid2"><label class="f">Pack shows only month and year? Pick the month<select id="i-bbm">${opt('', 'Month', '')}${MON.map((m, k) => opt(String(k + 1), m, '')).join('')}</select></label>
+        <label class="f">and the year<select id="i-bby">${opt('', 'Year', '')}${Array.from({ length: 12 }, (_, k) => new Date().getFullYear() - 1 + k).map(y => opt(String(y), String(y), '')).join('')}</select></label></div>
       <label class="c"><input id="i-conf" type="checkbox"${v.confirmed ? ' checked' : ''}><span>I counted this quantity myself</span></label>
       ${special}
       ${checksUp ? `<fieldset><legend>Checks</legend>${checks}</fieldset>` : ''}
       <details id="i-more"${open.more ? ' open' : ''}><summary>More: minimum to keep, barcode, notes${checksUp ? '' : ', checks'}</summary><div class="grid2 gap-top">
         ${N('i-min', 'Minimum to keep (flags it as low below this)', v.minQty)}${F('i-bar', 'Barcode number', v.barcode, 'inputmode="numeric"')}</div>
         ${checksUp ? '' : `<div class="gap-top">${checks}</div>`}
-        <label class="f gap-top">Notes<textarea id="i-notes">${esc(v.notes)}</textarea></label></details>
+        <label class="f gap-top">Notes<textarea id="i-notes">${esc(v.notes)}</textarea></label></details>` : `<div class="actions start"><button class="btn" type="button" data-x="manual">Type the details in by hand</button></div>`}
       <div class="fabwrap"><label class="fab" for="i-cam"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Photo</span></label></div>
       <div id="i-err">${err ? `<div class="banner bad"><span>${esc(err)}</span></div>` : ''}</div>
       <div class="actions">${isNew ? '' : '<button class="btn danger" type="button" data-x="del">Delete</button><button class="btn" type="button" data-x="batch">New batch</button>'}<button class="btn primary" type="submit" id="i-save">Save</button></div></form>`;
@@ -730,7 +734,8 @@ function openItem(id, preset) {
     if (!S.apiKey) { toast('Add your API key under More first.'); return; }
     const blobs = pending.map(p => p.blob).concat(kept().map(p => p.blob)).slice(0, MAX_PHOTOS);
     if (!blobs.length) { toast('Add a photo first.'); return; }
-    if (!navigator.onLine) { note = { cls: 'bad', text: 'You are offline. Reading a label needs a connection. You can save now and read later.' }; collect(); draw(); return; }
+    if (!navigator.onLine) { note = { cls: 'bad', text: 'You are offline. Reading a label needs a connection. You can save now and read later.' }; collect(); expanded = true; draw(); return; }
+    if (reading) { readAgain = true; return; }             // a photo was added mid-read: read once more when this one ends
     reading = true; paintPhotos();
     try {
       const out = await readLabel({ apiKey: S.apiKey, model: s.apiModel, blobs, area: areaTouched ? v.area : null, categories: s.foodCategories });
@@ -739,7 +744,10 @@ function openItem(id, preset) {
       collect();
       note = { cls: 'bad', text: e && e.userMessage ? e.userMessage : 'The photos could not be read. Try a sharper, closer photo, or type the details in.' };
     }
-    reading = false; err = ''; draw();
+    reading = false;
+    if (!alive) return;                                     // the form was closed while the read was running
+    err = ''; expanded = true; draw();
+    if (readAgain) { readAgain = false; doRead(); }
   }
 
   async function addFiles(files) {
@@ -753,6 +761,9 @@ function openItem(id, preset) {
       } catch (e) { toast('That photo could not be opened.'); }
     }
     paintPhotos();
+    if (!pending.length) return;
+    if (S.apiKey) doRead();                                 // read straight away; the Read label button stays for a re-read
+    else if (!expanded) { collect(); expanded = true; draw(); }
   }
 
   async function save() {
@@ -791,7 +802,7 @@ function openItem(id, preset) {
   }
 
   openDlg(() => {
-    dlgCleanup = () => urls.forEach(u => URL.revokeObjectURL(u));
+    dlgCleanup = () => { alive = false; urls.forEach(u => URL.revokeObjectURL(u)); };
     draw();
     if (orig) {
       DB.byIndex('photos', 'itemId', orig.id).then(recs => {
@@ -803,6 +814,10 @@ function openItem(id, preset) {
       const t = e.target;
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
+      else if (t.id === 'i-bbm' || t.id === 'i-bby') {
+        const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
+        if (m && y) $('#i-bb', dlg).value = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;   // last day of that month
+      }
     };
     dlg.oninput = e => {
       const t = e.target;
@@ -820,7 +835,8 @@ function openItem(id, preset) {
       const x = b.dataset.x;
       if (x === 'close') dlg.close();
       else if (x === 'read') doRead();
-      else if (x === 'tpl') { collect(); Object.assign(v, TEMPLATES[v.area][Number(b.dataset.i)].set); areaTouched = true; draw(); }
+      else if (x === 'manual') { collect(); expanded = true; draw(); const n = $('#i-name', dlg); if (n) n.focus(); }
+      else if (x === 'tpl') { collect(); Object.assign(v, TEMPLATES[v.area][Number(b.dataset.i)].set); areaTouched = true; expanded = true; draw(); }
       else if (x === 'calc') { collect(); if (perPack()) { open.calc = true; draw(); } else toast('Enter the weight and at least one per-100 figure.'); }
       else if (x === 'mah') {
         const m = C.num($('#c-mah', dlg).value);
