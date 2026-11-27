@@ -6,7 +6,7 @@ import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 
-const APP_VERSION = '1.11.2';
+const APP_VERSION = '1.11.3';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -374,13 +374,14 @@ function viewDue() {
     if (!entries.length && it.area !== 'kit') undated++;
     for (const e of entries) {
       const d = C.daysLeft(e.date, today());
-      const b = d < 0 ? 'over' : d < 30 ? 'd30' : d < s.eatFirstDays ? 'first' : d < s.soonDays ? 'soon' : 'later';
+      // A check is a reminder, not a shelf life: it only needs attention in its last 30 days.
+      const b = d < 0 ? 'over' : d < 30 ? 'd30' : e.check ? 'later' : d < s.eatFirstDays ? 'first' : d < s.soonDays ? 'soon' : 'later';
       buckets[b].push({ it, d, ...e });
     }
   }
   const tone = d => d < 0 ? 'expired' : d < s.eatFirstDays ? 'eatfirst' : d < s.soonDays ? 'soon' : 'ok';
-  const row = e => `<li class="row s-${tone(e.d)}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
-      <span class="daybox d-${tone(e.d)}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
+  const row = e => `<li class="row s-${e.check && e.d >= 30 ? 'ok' : tone(e.d)}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
+      <span class="daybox d-${e.check && e.d >= 30 ? 'ok' : tone(e.d)}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
       <span class="row-text"><span class="nm">${esc(e.it.name)}</span><span class="mt">${esc(e.kind)} ${esc(fdate(e.date))}${e.check ? '' : ' · ' + esc(n1(C.num(e.it.qty) || 0)) + ' in stock'}${e.it.location ? ' · ' + esc(e.it.location) : ''}</span></span></button>
       ${e.check ? `<button class="qty" data-act="checked" data-id="${esc(e.it.id)}"><b>✓</b><small>checked</small></button>` : ''}</li>`;
   const sect = (title, arr) => arr.length ? `<h2 class="sect">${esc(title)} (${arr.length})</h2><ul class="rows">${arr.sort((a, b) => a.d - b.d).map(row).join('')}</ul>` : '';
