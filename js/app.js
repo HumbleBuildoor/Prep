@@ -6,7 +6,7 @@ import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 
-const APP_VERSION = '1.11.1';
+const APP_VERSION = '1.11.2';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -520,7 +520,9 @@ function askRehome(gone, keep) {
       dlgCleanup = () => { if (!done) resolve(null); };
       dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Move the items first</h2><button class="btn small" data-x="close">Cancel</button></div>
         <p class="note">You are removing a location that still has items in it. Choose where they are kept now.</p>
-        ${gone.map((g, i) => `<label class="f">${plural(live().filter(it => it.location === g).length, 'item')} at ${esc(g)}: move to<select id="rh-${i}">${keep.map(k => opt(k, k, keep[0])).join('')}</select></label>`).join('')}
+        ${gone.map((g, i) => { const list = live().filter(it => it.location === g); return `<fieldset><legend>${esc(g)}: ${plural(list.length, 'item')}</legend>
+          <ul class="plain">${list.slice(0, 30).map(it => `<li><span>${esc(it.name)}</span><b>${esc(n1(C.num(it.qty) || 0))}</b></li>`).join('')}${list.length > 30 ? `<li><span>and ${list.length - 30} more</span></li>` : ''}</ul>
+          <label class="f">Move ${list.length === 1 ? 'it' : 'them'} to<select id="rh-${i}">${keep.map(k => opt(k, k, keep[0])).join('')}</select></label></fieldset>`; }).join('')}
         <div class="actions"><button class="btn primary" data-x="ok">Move and remove</button></div></div>`;
       dlg.onclick = e => {
         const b = e.target.closest('[data-x]');

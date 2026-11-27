@@ -331,3 +331,7 @@ ul.moves small { font-size: 13px; color: var(--muted); } ul.moves small:first-of
 ul.finds li { border-left-width: 4px; font-size: 14px; }
 ul.finds b { font-size: 15px; } ul.finds span { color: var(--muted); } ul.finds .todo { color: var(--ink); }
 .f-high { border-left-color: var(--bad) !important; } .f-medium { border-left-color: var(--warn) !important; } .f-low { border-left-color: var(--ok) !important; }
+
+ul.plain { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+ul.plain li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+ul.plain li:last-child { border-bottom: 0; }
