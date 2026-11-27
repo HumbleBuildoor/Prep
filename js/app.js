@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -591,7 +591,7 @@ function openItem(id, preset) {
         <div class="actions start"><input class="vh" id="i-cam" type="file" accept="image/*" capture="environment">
           <label class="btn" for="i-gal">Choose photos</label><input class="vh" id="i-gal" type="file" accept="image/*" multiple>
           <button class="btn primary" type="button" data-x="read" id="i-read">Read label</button></div>
-        <p class="note">${S.apiKey ? 'Tap the camera button at the bottom right. The label is read as soon as a photo is added, and the form opens for you to check. Up to 3 photos: front of pack, nutrition panel, date. Photos go to Anthropic with your key. Unreadable fields are left blank, never guessed.'
+        <p class="note">${S.apiKey ? 'Tap the camera button at the bottom right for up to 3 photos: front of pack, nutrition panel, date. Then tap Read label and the form opens, filled in for you to check. Photos go to Anthropic with your key. Unreadable fields are left blank, never guessed.'
           : 'Tap the camera button at the bottom right. Up to 3 photos. To have Claude read the label, add your API key under More. Without it, type the details, now or later.'}</p>
         <div id="i-note">${note ? `<div class="banner ${note.cls}"><span>${esc(note.text)}</span></div>` : ''}</div></fieldset>
       ${expanded ? `      <div id="i-match"></div>
@@ -761,9 +761,7 @@ function openItem(id, preset) {
       } catch (e) { toast('That photo could not be opened.'); }
     }
     paintPhotos();
-    if (!pending.length) return;
-    if (S.apiKey) doRead();                                 // read straight away; the Read label button stays for a re-read
-    else if (!expanded) { collect(); expanded = true; draw(); }
+    if (pending.length && !S.apiKey && !expanded) { collect(); expanded = true; draw(); }   // no key: open the form to type
   }
 
   async function save() {
