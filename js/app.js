@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.10.1';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -430,6 +430,8 @@ function viewMore() {
       <h3>What counts</h3><div class="grid2">
         ${N('s-oil', 'Oil, at most % of kcal', Math.round(s.oilCap * 100), 1)}${N('s-sweet', 'Sweeteners, at most % (0 = no cap)', Math.round(s.sweetCap * 100), 1)}
         ${N('s-eat', 'Use first under, days', s.eatFirstDays, 1)}${N('s-soon', 'Soon under, days', s.soonDays, 1)}</div>
+      <h3>Grab bags: the largest single item to suggest</h3><div class="grid2">
+        ${N('s-bagg', 'One pack, g', s.bagMaxG ?? 500, 1)}${N('s-bagl', 'One water bottle, L', s.bagMaxL ?? 1.5)}</div>
       <label class="c"><input id="s-protlim" type="checkbox"${s.proteinLimits !== false ? ' checked' : ''}><span>Protein can limit the days of food</span></label>
       <label class="c"><input id="s-expired" type="checkbox"${s.countExpired ? ' checked' : ''}><span>Count stock that is past its best-before date (medicine past expiry never counts)</span></label>${save}`) +
     fold('lists', 'Locations and categories', `${s.locations.length} / ${s.foodCategories.length}`, `<div class="grid2"><label class="f">Locations, one per line<textarea id="s-locs" rows="6">${esc(s.locations.join('\n'))}</textarea></label>
@@ -564,12 +566,11 @@ async function markChecked(id) {
 // ---------- where to keep a new item ----------
 // 1. A grab bag that an away-from-home scenario still needs it in, if the item suits a bag.
 // 2. Otherwise the place where most of the same kind is already kept.
-const BAG_MAX_G = 500;   // heaviest single pack suggested for a bag; a working limit, not a sourced figure
 function bagFit(v) {
-  const size = C.num(v.unitSize), light = size === null || v.unit === 'pcs' || size <= BAG_MAX_G;
+  const size = C.num(v.unitSize), light = size === null || v.unit === 'pcs' || size <= (C.num(S.settings.bagMaxG) ?? 500);
   switch (v.area) {
     case 'food': return v.needsCooking || !light ? null : 'needs no cooking';
-    case 'water': { const l = C.num(v.cap); return l !== null && l <= 1.5 ? 'is small enough to carry' : null; }
+    case 'water': { const l = C.num(v.cap); return l !== null && l <= (C.num(S.settings.bagMaxL) ?? 1.5) ? 'is small enough to carry' : null; }
     case 'power': return v.type === 'powerbank' ? 'is portable' : null;
     case 'medical': return 'is something to keep with you';
     case 'hygiene': return ['wipes', 'soap', 'toiletpaper', 'sanitary'].includes(v.type) && light ? 'is light to carry' : null;
@@ -1274,7 +1275,7 @@ main.addEventListener('submit', async e => {
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
       waterPerPerson: g('s-water') ?? 0, petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
       oilCap: Math.min(0.95, (g('s-oil') ?? 0) / 100), sweetCap: Math.min(0.95, (g('s-sweet') ?? 0) / 100),
-      eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180),
+      eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180), bagMaxG: g('s-bagg') ?? 500, bagMaxL: g('s-bagl') ?? 1.5,
       proteinLimits: $('#s-protlim').checked, countExpired: $('#s-expired').checked,
       locations: locs.length ? locs : DEFAULT_SETTINGS.locations.slice(), foodCategories: cats.length ? cats : DEFAULT_SETTINGS.foodCategories.slice(),
     });
