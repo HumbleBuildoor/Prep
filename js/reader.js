@@ -49,6 +49,9 @@ export function buildPrompt(area, categories) {
     '- kcalPer100: energy in kcal per 100 g or 100 ml as printed (if only kJ is printed, convert with kcal = kJ / 4.184)',
     '- proteinPer100: protein in g per 100 g or 100 ml',
     '- kcalPerPack and proteinPerPack: only if the label itself prints a figure for the whole pack',
+    '- servingSize: the serving size in g or ml as printed, as a number',
+    '- servingsPerPack: the number of servings per pack or container as printed',
+    '- kcalPerServing and proteinPerServing: energy in kcal and protein in g per serving as printed (convert kJ as above)',
     '- drainedWeight: in g, only if a drained weight is printed',
     '- needsCooking: true if the pack says it must be cooked or needs boiling water, otherwise false',
     'For water also give litresPerUnit. For a power bank or battery give mAh and wattHours as printed. For medicine give unitsPerPack (tablets, capsules or doses in one pack).',
@@ -79,6 +82,8 @@ export function normalise(o, categories) {
     kcalPer100: pos(o.kcalPer100), proteinPer100: pos(o.proteinPer100),
     kcalPerPack: pos(o.kcalPerPack), proteinPerPack: pos(o.proteinPerPack),
     drainedWeight: pos(o.drainedWeight),
+    servingSize: pos(o.servingSize), servingsPerPack: pos(o.servingsPerPack),
+    kcalPerServing: pos(o.kcalPerServing), proteinPerServing: pos(o.proteinPerServing),
     needsCooking: typeof o.needsCooking === 'boolean' ? o.needsCooking : null,
     litresPerUnit: pos(o.litresPerUnit), mAh: pos(o.mAh), wattHours: pos(o.wattHours), unitsPerPack: pos(o.unitsPerPack),
   };

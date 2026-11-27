@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -565,9 +565,9 @@ function openItem(id, preset) {
     let special = '';
     if (v.area === 'food') {
       special = `<fieldset><legend>Nutrition for one pack</legend><div class="grid2">${N('i-kcal', 'kcal per pack', v.kcal)}${N('i-prot', 'Protein, g per pack', v.protein)}</div>
-        <details id="i-calc"${open.calc ? ' open' : ''}><summary>Work it out from the per-100 g figures</summary><div class="grid2 gap-top">
+        <details id="i-calc"${open.calc ? ' open' : ''}><summary>Work it out from the per-100 g figures (optional)</summary><div class="grid2 gap-top">
           ${N('c-k', 'kcal per 100 g or ml', calc.k)}${N('c-p', 'Protein, g per 100 g or ml', calc.p)}${N('c-w', 'Weight you eat, g or ml (drained weight for fish in oil or brine)', calc.w)}</div>
-          <div class="actions start gap-top"><button class="btn small" type="button" data-x="calc">Fill in per-pack figures</button></div></details>
+          <div class="actions start gap-top"><button class="btn small" type="button" data-x="calc">Calculate the two figures above</button></div></details>
         <p class="note" id="i-basis">${esc(v.basis)}</p>
         <label class="c"><input type="radio" name="i-src" value="LABEL"${v.source === 'LABEL' ? ' checked' : ''}><span>Copied from the pack label, and I checked it</span></label>
         <label class="c"><input type="radio" name="i-src" value="ONLINE"${v.source === 'ONLINE' ? ' checked' : ''}><span>From a similar product found online</span></label>
@@ -687,17 +687,26 @@ function openItem(id, preset) {
     if (v.area === 'food') {
       set('category', o.category);
       if (o.needsCooking !== null) v.needsCooking = o.needsCooking;
-      const w = o.drainedWeight || ((o.unit === 'g' || o.unit === 'ml') ? o.unitSize : null);
+      // Weight eaten: the drained weight if printed, else serving size x servings, else the net size of the pack.
+      const servings = o.servingsPerPack, served = o.servingSize && servings ? Math.round(o.servingSize * servings * 10) / 10 : null;
+      const w = o.drainedWeight || served || ((o.unit === 'g' || o.unit === 'ml') ? o.unitSize : null);
       calc.k = val(o.kcalPer100); calc.p = val(o.proteinPer100); calc.w = val(w);
       v.basis = '';
-      if (o.kcalPerPack !== null || o.proteinPerPack !== null) {
+      if (o.kcalPerPack === null && o.proteinPerPack === null && servings && (o.kcalPerServing !== null || o.proteinPerServing !== null)) {
+        const parts = [];
+        if (o.kcalPerServing !== null) { v.kcal = Math.round(o.kcalPerServing * servings); parts.push(`${o.kcalPerServing} kcal a serving × ${servings} servings = ${v.kcal} kcal.`); }
+        else if (o.kcalPer100 !== null && w) { v.kcal = Math.round(o.kcalPer100 * w / 100); parts.push(`${o.kcalPer100} kcal per 100 × ${w} = ${v.kcal} kcal.`); }
+        if (o.proteinPerServing !== null) { v.protein = Math.round(o.proteinPerServing * servings * 10) / 10; parts.push(`Protein ${o.proteinPerServing} g a serving × ${servings} = ${v.protein} g.`); }
+        else if (o.proteinPer100 !== null && w) { v.protein = Math.round(o.proteinPer100 * w / 10) / 10; parts.push(`Protein ${o.proteinPer100} g per 100 × ${w} = ${v.protein} g.`); }
+        v.basis = parts.join(' ');
+      } else if (o.kcalPerPack !== null || o.proteinPerPack !== null) {
         const parts = [];
         if (o.kcalPerPack !== null) { v.kcal = o.kcalPerPack; parts.push('kcal'); }
         if (o.proteinPerPack !== null) { v.protein = o.proteinPerPack; parts.push('protein'); }
         v.basis = `Per-pack ${parts.join(' and ')} as printed on the label.`;
         if (o.kcalPerPack === null && o.kcalPer100 !== null && w) { v.kcal = Math.round(o.kcalPer100 * w / 100); v.basis += ` kcal: ${o.kcalPer100} per 100 × ${w} = ${v.kcal}.`; }
         if (o.proteinPerPack === null && o.proteinPer100 !== null && w) { v.protein = Math.round(o.proteinPer100 * w / 10) / 10; v.basis += ` Protein: ${o.proteinPer100} g per 100 × ${w} = ${v.protein} g.`; }
-      } else if (perPack() && o.drainedWeight) v.basis += ' Based on the drained weight.';
+      } else if (perPack()) v.basis += o.drainedWeight ? ' Based on the drained weight.' : served ? ` Weight is ${o.servingSize} per serving × ${servings} servings.` : '';
       if (calc.k !== '' || calc.p !== '') open.calc = true;
       v.source = '';                                   // the person must confirm where the figures come from
     } else if (v.area === 'water') {
