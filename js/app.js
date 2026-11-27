@@ -5,7 +5,7 @@ import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_
 import * as DB from './db.js';
 import { readLabel, testKey } from './reader.js';
 
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.9.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -522,7 +522,7 @@ function openUse(id) {
         <input id="u-n" type="number" inputmode="decimal" step="any" min="0" value="${esc(n)}" aria-label="How many"><button class="btn" data-x="plus" aria-label="One more">+</button></div>
       <div class="actions"><button class="btn" data-x="restock">Restock</button><button class="btn primary" data-x="use"${have <= 0 ? ' disabled' : ''}>Use</button></div>
       ${C.num(it.checkEveryMonths) ? `<div class="actions"><button class="btn" data-x="checked">Mark as checked today</button></div>` : ''}
-      <p class="note">Part of a pack is fine: use 0.5 for half. Restock adds units with the same date. For a new date, open the item and choose New batch.</p></div>`;
+      <p class="note">Half a pack is 0.5. Restock keeps this date; for a new date, open the item and tap New batch.</p></div>`;
   };
   openDlg(() => {
     draw();
@@ -637,7 +637,7 @@ function openItem(id, preset) {
       special = `<fieldset><legend>Nutrition for one pack</legend><div class="grid2">${N('i-kcal', 'kcal per pack', v.kcal)}${N('i-prot', 'Protein, g per pack', v.protein)}</div>
         <details id="i-calc"${open.calc ? ' open' : ''}><summary>Work it out from the per-100 g figures (optional)</summary><div class="grid2 gap-top">
           ${N('c-k', 'kcal per 100 g or ml', calc.k)}${N('c-p', 'Protein, g per 100 g or ml', calc.p)}${N('c-w', 'Weight you eat, g or ml (drained weight for fish in oil or brine)', calc.w)}</div>
-          <div class="actions start gap-top"><button class="btn small" type="button" data-x="calc">Calculate the two figures above</button></div></details>
+          <p class="note gap-top">The two figures above fill in as you type. Leave the weight blank to use the pack size.</p></details>
         <p class="note" id="i-basis">${esc(v.basis)}</p>
         <label class="c"><input type="radio" name="i-src" value="LABEL"${v.source === 'LABEL' ? ' checked' : ''}><span>Copied from the pack label, and I checked it</span></label>
         <label class="c"><input type="radio" name="i-src" value="ONLINE"${v.source === 'ONLINE' ? ' checked' : ''}><span>From a similar product found online</span></label>
@@ -677,7 +677,7 @@ function openItem(id, preset) {
         ${checksUp ? '' : `<div class="gap-top">${checks}</div>`}
         <label class="f gap-top">Notes<textarea id="i-notes">${esc(v.notes)}</textarea></label></details>` : `<div class="actions start"><button class="btn" type="button" data-x="manual">Type the details in by hand</button></div>`}
       <div id="i-err">${err ? `<div class="banner bad"><span>${esc(err)}</span></div>` : ''}</div>
-      <div class="dlg-foot">${isNew ? '' : '<button class="btn danger small" type="button" data-x="del">Delete</button><button class="btn small" type="button" data-x="batch">New batch</button>'}<button class="btn primary grow" type="submit" id="i-save">Save</button>
+      <div class="dlg-foot">${isNew ? '' : '<button class="btn danger small" type="button" data-x="del">Delete</button><button class="btn small" type="button" data-x="batch">New batch</button>'}<button class="btn primary grow" type="submit" id="i-save">Save</button>${isNew ? '<button class="btn small" type="button" data-x="savenext">Save,<br>add next</button>' : ''}
         <label class="fab" for="i-cam">${svg(CAMERA, ' width="28" height="28"')}<span>Photo</span></label></div></form>`;
     paintPhotos(); kwarn(); match();
   }
@@ -743,8 +743,9 @@ function openItem(id, preset) {
   }
 
   function perPack() {
-    const k = C.num(calc.k), p = C.num(calc.p), w = C.num(calc.w);
+    const k = C.num(calc.k), p = C.num(calc.p), w = C.num(calc.w) ?? (v.unit === 'g' || v.unit === 'ml' ? C.num(v.unitSize) : null);
     if (!w || (k === null && p === null)) return false;
+    if (calc.w === '') calc.w = String(w);
     let maths = '';
     if (k !== null) { v.kcal = Math.round(k * w / 100); maths = `${k} kcal per 100 × ${w} = ${v.kcal} kcal.`; }
     if (p !== null) { v.protein = Math.round(p * w / 10) / 10; maths += ` Protein ${p} g per 100 × ${w} = ${v.protein} g.`; }
@@ -781,7 +782,7 @@ function openItem(id, preset) {
         if (o.proteinPerPack === null && o.proteinPer100 !== null && w) { v.protein = Math.round(o.proteinPer100 * w / 10) / 10; v.basis += ` Protein: ${o.proteinPer100} g per 100 × ${w} = ${v.protein} g.`; }
       } else if (perPack()) v.basis += o.drainedWeight ? ' Based on the drained weight.' : served ? ` Weight is ${o.servingSize} per serving × ${servings} servings.` : '';
       if (calc.k !== '' || calc.p !== '') open.calc = true;
-      v.source = '';                                   // the person must confirm where the figures come from
+      v.source = v.kcal !== '' || v.protein !== '' ? 'LABEL' : '';   // read off the pack; the person checks the figures and can change this before saving
     } else if (v.area === 'water') {
       if (o.litresPerUnit !== null) v.cap = o.litresPerUnit; else if (o.unit === 'ml' && o.unitSize) v.cap = o.unitSize / 1000;
       if (v.cap !== '') capTouched = true;
@@ -833,7 +834,7 @@ function openItem(id, preset) {
     if (pending.length && !S.apiKey && !expanded) { collect(); expanded = true; draw(); }   // no key: open the form to type
   }
 
-  async function save() {
+  async function save(again) {
     collect();
     const qty = C.num(v.qty), problems = [];
     const photos = kept().length + pending.length;
@@ -865,7 +866,8 @@ function openItem(id, preset) {
     });
     if (!ok) { if (btn) btn.disabled = false; return; }
     S.lastLoc = item.location;
-    dlg.close(); refresh(); toast('Saved.');
+    dlg.close(); refresh(); toast(again ? `Saved ${item.name}. Add the next one.` : 'Saved.');
+    if (again) openItem(null);
     if (S.persisted === null || S.persisted === false) keepStorage();
   }
 
@@ -883,6 +885,7 @@ function openItem(id, preset) {
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
       else if (t.id === 'i-type' && v.area !== 'food') { collect(); draw(); }
+      else if (['c-k', 'c-p', 'c-w'].includes(t.id)) { collect(); if (perPack()) { open.calc = true; draw(); } }
       else if ((t.id === 'i-size' || t.id === 'i-unit') && v.area === 'hygiene') { collect(); draw(); }
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
@@ -907,6 +910,7 @@ function openItem(id, preset) {
       else if (x === 'read') doRead();
       else if (x === 'manual') { collect(); expanded = true; draw(); const n = $('#i-name', dlg); if (n) n.focus(); }
       else if (x === 'tpl') { collect(); Object.assign(v, TEMPLATES[v.area][Number(b.dataset.i)].set); areaTouched = true; expanded = true; draw(); }
+      else if (x === 'savenext') save(true);
       else if (x === 'calc') { collect(); if (perPack()) { open.calc = true; draw(); } else toast('Enter the weight and at least one per-100 figure.'); }
       else if (x === 'mah') {
         const m = C.num($('#c-mah', dlg).value);
@@ -985,16 +989,36 @@ function openScenarioEdit(id) {
   const v = Object.assign({ name: '', days: 7, place: 'home', tap: false, grid: false, shops: false, ration: 'household', locations: [], petsAlong: true }, orig || {});
   const locs = Array.isArray(v.locations) ? v.locations : [];
   const C_ = (fid, label, on) => `<label class="c"><input id="${fid}" type="checkbox"${on ? ' checked' : ''}><span>${label}</span></label>`;
-  openDlg(() => {
+  let rationTouched = !!orig;
+  const paint = () => {
+    const away = v.place === 'away';
     dlg.innerHTML = `<form class="dlg" id="scn-form"><div class="dlg-head"><h2>${orig ? 'Edit scenario' : 'Add scenario'}</h2><button class="btn small" type="button" data-x="close">Close</button></div>
       <div class="grid2"><label class="f">Name<input id="n-name" required value="${esc(v.name)}"></label>
-        <label class="f">How many days to cover<input id="n-days" type="number" inputmode="numeric" min="1" step="1" required value="${esc(v.days)}"></label></div>
+        <label class="f">Days to cover<input id="n-days" type="number" inputmode="numeric" min="1" step="1" required value="${esc(v.days)}"></label></div>
       <div class="grid2"><label class="f">Where you are<select id="n-place">${opt('home', 'At home', v.place)}${opt('away', 'Away from home', v.place)}</select></label>
-        <label class="f">Food ration<select id="n-ration">${opt('household', 'Household level (Survival or Standard)', v.ration)}${opt('active', `On the move (${n0(s.kcalActive)} kcal)`, v.ration)}</select></label></div>
-      <fieldset><legend>What still works (at home)</legend>${C_('n-tap', 'Tap water works', v.tap)}${C_('n-grid', 'Mains power works', v.grid)}${C_('n-shops', 'Shops are open', v.shops)}</fieldset>
-      <fieldset><legend>Count only these locations (none ticked = all)</legend>${s.locations.map((l, i) => C_('n-loc-' + i, esc(l), locs.includes(l))).join('')}
-        ${C_('n-pets', 'Pets come along when away', v.petsAlong !== false)}</fieldset>
+        <label class="f">Food ration<select id="n-ration">${opt('household', 'Survival or Standard, as set on Ready', v.ration)}${opt('active', `On the move (${n0(s.kcalActive)} kcal)`, v.ration)}</select></label></div>
+      ${away ? `<p class="note">Away from home counts no tap water, mains power or shops.</p>${C_('n-pets', 'Pets come along', v.petsAlong !== false)}`
+        : `<fieldset><legend>What still works</legend>${C_('n-tap', 'Tap water', v.tap)}${C_('n-grid', 'Mains power', v.grid)}${C_('n-shops', 'Shops', v.shops)}</fieldset>`}
+      <fieldset><legend>${away ? 'Which bags or places you take' : 'Count only these places'} (none ticked = all)</legend>${s.locations.map((l, i) => C_('n-loc-' + i, esc(l), v.locations.includes(l))).join('')}</fieldset>
       <div class="actions">${orig ? '<button class="btn danger" type="button" data-x="del">Delete</button>' : ''}<button class="btn primary" type="submit">Save</button></div></form>`;
+  };
+  const collect = () => {
+    const el = fid => $('#' + fid, dlg);
+    v.name = el('n-name').value; v.days = el('n-days').value; v.place = el('n-place').value; v.ration = el('n-ration').value;
+    if (el('n-tap')) { v.tap = el('n-tap').checked; v.grid = el('n-grid').checked; v.shops = el('n-shops').checked; }
+    if (el('n-pets')) v.petsAlong = el('n-pets').checked;
+    v.locations = s.locations.filter((l, i) => el('n-loc-' + i).checked);
+  };
+  v.locations = locs.slice();
+  openDlg(() => {
+    paint();
+    dlg.onchange = e => {
+      if (e.target.id === 'n-ration') rationTouched = true;
+      if (e.target.id !== 'n-place') return;
+      collect();
+      if (!rationTouched) v.ration = v.place === 'away' ? 'active' : 'household';   // on foot you burn more
+      paint();
+    };
     dlg.onclick = e => {
       const b = e.target.closest('[data-x]');
       if (!b) return;
@@ -1007,11 +1031,11 @@ function openScenarioEdit(id) {
     };
     dlg.onsubmit = async e => {
       e.preventDefault();
-      const name = $('#n-name', dlg).value.trim(), days = C.num($('#n-days', dlg).value);
+      collect();
+      const name = String(v.name).trim(), days = C.num(v.days);
       if (!name || !days || days < 1) { toast('Enter a name and the number of days.'); return; }
-      const next = { id: orig ? orig.id : uid(), name, days: Math.round(days), place: $('#n-place', dlg).value, ration: $('#n-ration', dlg).value,
-        tap: $('#n-tap', dlg).checked, grid: $('#n-grid', dlg).checked, shops: $('#n-shops', dlg).checked,
-        locations: s.locations.filter((l, i) => $('#n-loc-' + i, dlg).checked), petsAlong: $('#n-pets', dlg).checked };
+      const next = { id: orig ? orig.id : uid(), name, days: Math.round(days), place: v.place, ration: v.ration,
+        tap: !!v.tap, grid: !!v.grid, shops: !!v.shops, locations: v.locations, petsAlong: v.petsAlong !== false };
       if (orig) S.scenarios = S.scenarios.map(x => (x.id === orig.id ? next : x)); else S.scenarios.push(next);
       if (await guard(saveScenarios)) { dlg.close(); refresh(); }
     };
@@ -1209,7 +1233,15 @@ main.addEventListener('submit', async e => {
     const key = $('#k-key').value.trim();
     S.settings.apiModel = $('#k-model').value;
     const ok = await guard(async () => { await saveSettings(); if (key) { await DB.put('meta', key, 'apiKey'); S.apiKey = key; } });
-    if (ok) { render(); toast(key ? 'Key saved on this phone.' : 'Saved.'); }
+    if (ok) {
+      render();
+      if (!key) toast('Saved.');
+      else {
+        toast('Key saved. Testing it…');
+        try { await testKey(S.apiKey, S.settings.apiModel); toast('Key saved and working.'); }
+        catch (x) { toast('Key saved, but the test failed. ' + (x && x.userMessage ? x.userMessage : 'Check your connection and tap Test.')); }
+      }
+    }
   }
 });
 
