@@ -68,7 +68,7 @@ export const DEFAULT_SETTINGS = {
   waterPerPerson: 4, petWaterEach: 0.3,
   flameMinPerDay: 30, powerWhPerDay: 50,
   oilCap: 0.1, oilCategory: 'Oil & Fat', sweetCap: 0, sweetCategory: 'Honey & Sweeteners',
-  eatFirstDays: 90, soonDays: 180, bagMaxG: 500, bagMaxL: 1.5, countExpired: true,
+  eatFirstDays: 90, soonDays: 180, bagMaxG: 500, bagMaxL: 1.5, bagMinKcal100: 300, countExpired: true,
   locations: ['Home', 'Bag 1', 'Bag 2', 'Car'],
   foodCategories: ['Rice & Grains', 'Noodles & Porridge', 'Protein (canned)', 'Soups', 'Vegetables', 'Fruit & Snacks',
     'Crackers & Biscuits', 'Honey & Sweeteners', 'Beverages', 'Oil & Fat', 'Seasoning'],

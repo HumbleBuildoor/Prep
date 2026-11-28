@@ -7,7 +7,7 @@ import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 
-const APP_VERSION = '1.12.1';
+const APP_VERSION = '1.13.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -559,8 +559,9 @@ function viewMore() {
       <h3>What counts</h3><div class="grid2">
         ${N('s-oil', 'Oil, at most % of kcal', Math.round(s.oilCap * 100), 1)}${N('s-sweet', 'Sweeteners, at most % (0 = no cap)', Math.round(s.sweetCap * 100), 1)}
         ${N('s-eat', 'Use first under, days', s.eatFirstDays, 1)}${N('s-soon', 'Soon under, days', s.soonDays, 1)}</div>
-      <h3>Grab bags: the largest single item to suggest</h3><div class="grid2">
-        ${N('s-bagg', 'One pack, g', s.bagMaxG ?? 500, 1)}${N('s-bagl', 'One water bottle, L', s.bagMaxL ?? 1.5)}</div>
+      <h3>Grab bags: what to suggest for them</h3><div class="grid2">
+        ${N('s-bagg', 'One pack, g', s.bagMaxG ?? 500, 1)}${N('s-bagl', 'One water bottle, L', s.bagMaxL ?? 1.5)}
+        ${N('s-bagk', 'Food must give at least, kcal per 100 g', s.bagMinKcal100 ?? 300, 1)}</div>
       <label class="c"><input id="s-protlim" type="checkbox"${s.proteinLimits !== false ? ' checked' : ''}><span>Protein can limit the days of food</span></label>
       <label class="c"><input id="s-expired" type="checkbox"${s.countExpired ? ' checked' : ''}><span>Count stock that is past its best-before date (medicine past expiry never counts)</span></label>${save}`) +
     fold('lists', 'Locations and categories', `${s.locations.length} / ${s.foodCategories.length}`, `<div class="grid2"><label class="f">Locations, one per line<textarea id="s-locs" rows="6">${esc(s.locations.join('\n'))}</textarea></label>
@@ -746,6 +747,7 @@ function bagFit(v) {
 function suggestLocation(v) {
   const s = S.settings, items = live();
   const fit = bagFit(v);
+  let skipped = '';
   if (fit) {
     for (const scn of S.scenarios) {
       const bags = (Array.isArray(scn.locations) ? scn.locations : []).filter(l => s.locations.includes(l));
@@ -753,18 +755,32 @@ function suggestLocation(v) {
       if (v.area === 'pets' && scn.petsAlong === false) continue;
       const r = C.evaluate(scn, items, s, today(), typeLabel), need = r.needs.find(n => n.id === v.area);
       if (!need || (need.logged && need.days >= r.target)) continue;
+      let state = need.logged ? `${fmtDays(need.days)} of ${r.target} days` : 'nothing logged', adds = '';
+      if (v.area === 'food') {
+        // Send food to a bag only if it helps with what the bag is actually short of, and is worth its weight.
+        const lim = need.lines.filter(l => l.essential !== false).sort((a, b) => a.days - b.days)[0];
+        const kcal = C.num(v.kcal), prot = C.num(v.protein), size = C.num(v.unitSize), qty = C.num(v.qty) || 1;
+        if (lim && lim.unit === 'g') {
+          if (!(prot > 0)) continue;
+          state = `${n0(lim.have)} of ${n0(lim.perDay * r.target)} g of protein`; adds = ` This adds ${n0(prot * qty)} g.`;
+        } else {
+          if (kcal === null) continue;                                     // no calorie figure yet: cannot judge
+          const per100 = size && (v.unit === 'g' || v.unit === 'ml') ? kcal / size * 100 : null, min = C.num(s.bagMinKcal100) ?? 300;
+          if (per100 !== null && per100 < min) { skipped = ` Not suggested for a bag: at ${n0(per100)} kcal per 100 g it is heavy for the calories it carries (the limit is ${n0(min)}, set under More).`; continue; }
+          if (lim) { state = `${n0(lim.have)} of ${n0(lim.perDay * r.target)} kcal`; adds = ` This adds ${n0(kcal * qty)}.`; }
+        }
+      }
       const amountAt = loc => items.filter(i => i.area === v.area && i.location === loc).reduce((t, i) => t + (C.num(i.qty) || 0) * (v.area === 'food' ? C.num(i.kcal) || 0 : C.num(i.cap) || 1), 0);
       const bag = bags.slice().sort((a, b) => amountAt(a) - amountAt(b))[0];
-      const state = need.logged ? `${fmtDays(need.days)} of ${r.target} days` : 'nothing logged';
-      return { loc: bag, why: `"${scn.name}" is short on ${need.name.toLowerCase()} (${state}), and this ${fit}.` };
+      return { loc: bag, why: `"${scn.name}" has ${state}, and ${bags.length > 1 ? 'this bag holds the least' : 'this is its bag'}. It ${fit}.${adds}` };
     }
   }
   const kind = i => (v.area === 'food' ? i.category === v.category : i.type === v.type);
   for (const [test, label] of [[i => i.area === v.area && kind(i), v.area === 'food' ? v.category : typeLabel(v.area, v.type)], [i => i.area === v.area, areaOf(v.area).name]]) {
     const count = new Map();
     for (const i of items) if (test(i) && s.locations.includes(i.location)) count.set(i.location, (count.get(i.location) || 0) + 1);
-    const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (top) return { loc: top[0], why: `You keep most of the same kind here (${label}).` };
+    const best = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (best) return { loc: best[0], why: `You keep most of the same kind here (${label}).${skipped}` };
   }
   return null;
 }
@@ -1123,7 +1139,7 @@ function openItem(id, preset) {
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
       else if (t.id === 'i-loc') { locTouched = true; hints(); }
-      else if (['i-type', 'i-cook', 'i-size', 'i-unit', 'i-cap'].includes(t.id)) hints();
+      else if (['i-type', 'i-cook', 'i-size', 'i-unit', 'i-cap', 'i-kcal', 'i-prot', 'i-qty'].includes(t.id)) hints();
       else if (['c-k', 'c-p', 'c-w'].includes(t.id)) calcLive();
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
@@ -1611,7 +1627,7 @@ main.addEventListener('submit', async e => {
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
       waterPerPerson: g('s-water') ?? 0, petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
       oilCap: Math.min(0.95, (g('s-oil') ?? 0) / 100), sweetCap: Math.min(0.95, (g('s-sweet') ?? 0) / 100),
-      eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180), bagMaxG: g('s-bagg') ?? 500, bagMaxL: g('s-bagl') ?? 1.5,
+      eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180), bagMaxG: g('s-bagg') ?? 500, bagMaxL: g('s-bagl') ?? 1.5, bagMinKcal100: g('s-bagk') ?? 300,
       proteinLimits: $('#s-protlim').checked, countExpired: $('#s-expired').checked,
       locations: locs.length ? locs : DEFAULT_SETTINGS.locations.slice(), foodCategories: cats.length ? cats : DEFAULT_SETTINGS.foodCategories.slice(),
     });
