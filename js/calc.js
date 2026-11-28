@@ -240,7 +240,10 @@ export function evaluate(scn, items, s, today, labelOf) {
   return { needs, limiting, minDays, target, ratio, status };
 }
 
-/** What to add so that every scenario is covered: the largest shortfall of each line across scenarios. */
+/**
+ * What to add so that every scenario is covered: the largest shortfall of each line across scenarios.
+ * Each gap also carries where it fails soonest (soonest, in days, with that scenario's name and target).
+ */
 export function gaps(scenarios, items, s, today, labelOf) {
   const out = new Map();
   for (const scn of scenarios) {
@@ -250,16 +253,19 @@ export function gaps(scenarios, items, s, today, labelOf) {
         if (l.essential === false || !(l.days < r.target)) continue;
         const short = r.target * l.perDay - l.have;
         const key = n.id + ':' + l.key;
-        const g = out.get(key) || { key, need: n.id, needName: n.name, label: l.label, unit: l.unit, short: 0, worst: '', scenarios: [] };
+        const g = out.get(key) || { key, need: n.id, needName: n.name, label: l.label, unit: l.unit, short: 0, worst: '', scenarios: [], soonest: Infinity, soonestIn: '', soonestTarget: 0, logged: n.logged !== false };
         g.scenarios.push(scn.name);
         if (short > g.short) { g.short = short; g.worst = scn.name; }
+        if (l.days < g.soonest) { g.soonest = l.days; g.soonestIn = scn.name; g.soonestTarget = r.target; }
         out.set(key, g);
       }
     }
   }
-  // Most scenarios first; ties go in order of urgency: water, then food, fuel, power, medical, hygiene, pets.
+  // Drinking water first, because running out of it does harm soonest. Then whatever runs out soonest in any scenario.
+  // Ties go in order of urgency: water, then food, fuel, power, medical, hygiene, pets.
   const rank = id => { const i = ['water', 'food', 'fuel', 'power', 'medical', 'hygiene', 'pets'].indexOf(id); return i < 0 ? 99 : i; };
-  return [...out.values()].sort((a, b) => b.scenarios.length - a.scenarios.length || rank(a.need) - rank(b.need) || a.label.localeCompare(b.label));
+  const first = g => (g.key === 'water:water' ? 0 : 1);
+  return [...out.values()].sort((a, b) => first(a) - first(b) || a.soonest - b.soonest || rank(a.need) - rank(b.need) || a.label.localeCompare(b.label));
 }
 
 /** Plain totals of what is in stock, ignoring scenarios. */

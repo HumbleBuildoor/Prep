@@ -7,8 +7,9 @@ import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 import * as SIT from './situation.js';
+import * as TD from './todo.js';
 
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.16.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -81,6 +82,17 @@ function ask(message, okLabel, danger) {
       <button class="btn" data-v="0">Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" data-v="1">${esc(okLabel)}</button></div></div>`;
     askDlg.onclick = e => { const b = e.target.closest('[data-v]'); if (b) { askDlg.close(); resolve(b.dataset.v === '1'); } };
     askDlg.oncancel = () => resolve(false);
+    askDlg.showModal();
+  });
+}
+
+/** Offers a few choices. Resolves to the value picked, or null when cancelled. options: [[value, label], …] */
+function choose(message, options) {
+  return new Promise(resolve => {
+    askDlg.innerHTML = `<div class="dlg"><p class="askmsg">${esc(message)}</p><div class="choices">${options.map(o => `<button class="btn" data-v="${esc(o[0])}">${esc(o[1])}</button>`).join('')}</div>
+      <div class="actions"><button class="btn" data-v="">Cancel</button></div></div>`;
+    askDlg.onclick = e => { const b = e.target.closest('[data-v]'); if (b) { askDlg.close(); resolve(b.dataset.v || null); } };
+    askDlg.oncancel = () => resolve(null);
     askDlg.showModal();
   });
 }
@@ -290,6 +302,8 @@ const AREA_ICON = {
 const areaIcon = id => svg(AREA_ICON[id] || AREA_ICON.kit);
 const CAMERA = '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/>';
 const FILTER = '<path d="M4 6h16M7 12h10M10 18h4"/>';
+const HELP = '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2 1-1.2 1.8M12 16.8h.01"/>';
+const FLAG = '<path d="M6 21V4M6 4.500h11l-2 4 2 4H6"/>';
 
 // Which folded sections are open, remembered for the session so a save or redraw does not close them.
 const OPEN = new Set(['backup']);
@@ -303,8 +317,7 @@ document.addEventListener('toggle', e => {
 const fold = (key, title, state, body, tag = 'div', attrs = '') =>
   `<details class="card fold2" data-open="${key}"${OPEN.has(key) ? ' open' : ''}><summary><h2>${title}</h2><span class="state">${state || ''}</span></summary><${tag} class="fold-body"${attrs}>${body}</${tag}></details>`;
 
-// A check (recharge a power bank, test a torch) is flagged this many days before it is due, not months ahead like a best-before date.
-const CHECK_DAYS = 3;
+const CHECK_DAYS = TD.CHECK_DAYS;
 
 // ---------- item display ----------
 function dueInfo(it) {
@@ -394,10 +407,10 @@ function ring(ratio, cls, big) {
 function gapAmount(g) {
   const adults = C.num(S.settings.adults) || 1;
   if (g.unit === 'kcal') return `${n0(g.short)} kcal, about ${n1(g.short / 3600)} kg of dry rice`;
-  if (g.unit === 'g') return `${n0(g.short)} g of protein`;
+  if (g.unit === 'g') return `${n0(g.short)} g`;
   if (g.unit === 'min') return `${n0(g.short)} minutes of flame`;
   if (g.unit === 'person-days') return `${n0(g.short / adults)} more days for ${plural(adults, 'adult')}`;
-  if (g.unit === 'pet-days') return `${n0(g.short)} pet-days of food`;
+  if (g.unit === 'pet-days') { const n = Math.max(1, C.num(g.key === 'pets:dogfood' ? S.settings.dogs : S.settings.cats) || 1); return `${n0(Math.ceil(g.short / n))} days for ${plural(n, g.key === 'pets:dogfood' ? 'dog' : 'cat')}`; }
   return amount(g.short, g.unit);
 }
 
@@ -406,16 +419,19 @@ function viewReady() {
   const hh = [plural(s.adults, 'adult'), s.dogs ? plural(s.dogs, 'dog') : '', s.cats ? plural(s.cats, 'cat') : ''].filter(Boolean).join(', ');
   const views = S.scenarios.map(scn => ({ scn, v: scenarioView(scn, C.evaluate(scn, items, s, today(), typeLabel)) }));
   const covered = views.filter(x => x.v.covered).length;
-  const gs = C.gaps(S.scenarios, items, s, today(), typeLabel);
-  const gapName = g => esc(g.needName) + (g.label && g.label !== g.needName && !['water', 'fuel', 'power'].includes(g.need) ? ': ' + esc(g.label) : '');
-  const gapRow = g => `<li><span class="g-what"><b>${gapName(g)}</b><small>short in ${g.scenarios.length} of ${S.scenarios.length} scenarios</small></span><span class="g-amt">${esc(gapAmount(g))}</span></li>`;
+  let weak = null;
+  for (const x of views) if (!x.v.covered && (!weak || x.v.ratio < weak.v.ratio)) weak = x;
   const heroCls = !S.scenarios.length || covered === S.scenarios.length ? 'ok' : covered === 0 ? 'bad' : 'short';
 
   let h = `<section class="hero h-${heroCls}"><div class="hero-ring">${ring(S.scenarios.length ? covered / S.scenarios.length : 1, 'hero', `${covered}<small>/${S.scenarios.length}</small>`)}</div>
       <div class="hero-text"><div class="eyebrow">Scenarios covered</div>
-        <div class="hero-line">${gs.length ? `Fix next: <b>${gapName(gs[0])}</b>, ${esc(gapAmount(gs[0]))}` : 'Everything you have logged covers every scenario.'}</div>
-        <div class="hero-sub">${esc(hh)}</div></div></section>
-    <div class="ration"><div class="seg" role="group" aria-label="Ration level">
+        <div class="hero-line">${weak ? `Weakest: <b>${esc(weak.scn.name)}</b>, ${weak.v.days === null ? 'nothing logged' : `${fmtDays(weak.v.days)} of ${plural(weak.scn.days, 'day')}`}` : 'Everything you have logged covers every scenario.'}</div>
+        <div class="hero-sub">${esc(hh)}</div></div></section>`;
+  const m = todoModel(), nx = TD.next([m.gaps, m.now, m.finds, m.flags], 3), count = m.gaps.length + m.now.length + m.finds.length + m.flags.length;
+  if (nx.length && items.length) {
+    h += `<div class="card nextcard"><div class="askrow"><h2>Next</h2>${count > nx.length ? `<a class="state" href="#todo">All ${count} to do</a>` : ''}</div><ul class="rows">${nx.map(x => todoRow(x)).join('')}</ul></div>`;
+  }
+  h += `    <div class="ration"><div class="seg" role="group" aria-label="Ration level">
       <button data-act="ration" data-v="survival" aria-pressed="${s.rationLevel !== 'standard'}">Survival ${n0(s.kcalSurvival)}</button>
       <button data-act="ration" data-v="standard" aria-pressed="${s.rationLevel === 'standard'}">Standard ${n0(s.kcalStandard)}</button></div>
       ${items.some(i => i.area === 'food') ? '<button class="btn" data-act="meals">Plan meals</button>' : ''}</div>`;
@@ -428,10 +444,6 @@ function viewReady() {
       <span class="t-of">of ${plural(scn.days, 'day')}</span><span class="t-name">${esc(scn.name)}</span><span class="t-lim">${esc(v.limit)}</span></button></li>`).join('') +
     `<li><button class="scn t-add" data-act="scn-new"><span class="t-plus" aria-hidden="true">+</span><span class="t-name">Add scenario</span></button></li></ul>`;
 
-  if (gs.length) {
-    h += `<div class="card"><h2>Fix next</h2><ul class="gaps">${gs.slice(0, 3).map(gapRow).join('')}</ul>` +
-      (gs.length > 3 ? `<details class="more"><summary>Show all ${gs.length}</summary><ul class="gaps">${gs.slice(3).map(gapRow).join('')}</ul></details>` : '') + '</div>';
-  }
   if (items.length) {
     h += `<div class="card"><div class="askrow"><h2>Ask Claude</h2><span class="state">sends your list, never photos</span></div>
       <div class="ask2"><button class="btn" data-act="advise" data-v="place">${svg('<path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.500C5 14.800 12 21 12 21z"/><circle cx="12" cy="9.500" r="2.500"/>', ' width="20" height="20"')}Where things should go</button>
@@ -486,36 +498,73 @@ function viewSupplies() {
     ${list.length ? '<ul class="rows">' + list.map(rowHTML).join('') + '</ul>' : `<p class="empty">${total ? 'Nothing matches these filters.' : 'No items yet. Tap Add item to log the first one.'}</p>`}`;
 }
 
-// ---------- view: Due ----------
-function viewDue() {
-  const s = S.settings, buckets = { over: [], checks: [], d30: [], first: [], soon: [], later: [] };
-  let undated = 0;
-  for (const it of live()) {
-    if ((C.num(it.qty) || 0) <= 0 && it.area !== 'kit') continue;
-    const entries = [];
-    if (it.bestBefore) entries.push({ kind: it.area === 'medical' ? 'Expires' : 'Best before', date: it.bestBefore, check: false });
-    const cd = C.checkDue(it);
-    if (cd) entries.push({ kind: 'Check', date: cd, check: true });
-    if (!entries.length && it.area !== 'kit') undated++;
-    for (const e of entries) {
-      const d = C.daysLeft(e.date, today());
-      // A check is a reminder, not a shelf life: it only needs attention in its last 30 days.
-      const b = d < 0 ? 'over' : e.check ? (d <= CHECK_DAYS ? 'checks' : 'later') : d < 30 ? 'd30' : d < s.eatFirstDays ? 'first' : d < s.soonDays ? 'soon' : 'later';
-      buckets[b].push({ it, d, ...e });
-    }
-  }
-  const tone = d => d < 0 ? 'expired' : d < s.eatFirstDays ? 'eatfirst' : d < s.soonDays ? 'soon' : 'ok';
-  const row = e => `<li class="row s-${e.check && e.d > CHECK_DAYS ? 'ok' : tone(e.d)}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
-      <span class="daybox d-${e.check && e.d > CHECK_DAYS ? 'ok' : tone(e.d)}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
+// ---------- view: To do ----------
+// Everything worth acting on, in one list: gaps in the scenarios, dates on items, and what the questionnaire leaves open.
+
+function todoModel() {
+  const s = S.settings, sit = s.situation || {}, off = (s.todo && s.todo.off) || {}, t = today(), items = live();
+  const all = [
+    ...C.gaps(S.scenarios, items, s, t, typeLabel).map(g => ({ kind: 'gap', key: 'gap:' + g.key, g })),
+    ...SIT.findOuts(sit.answers, sit.other).map(f => ({ kind: 'find', key: f.key, f })),
+    ...SIT.flags(sit.answers).map(f => ({ kind: 'flag', key: f.key, f })),
+  ];
+  const d = TD.dates(items, s, t), on = all.filter(x => TD.isOn(off, x.key, t)), of = k => on.filter(x => x.kind === k);
+  return { gaps: of('gap'), finds: of('find'), flags: of('flag'), dates: d,
+    now: d.over.concat(d.checks).map(e => ({ kind: 'date', key: 'date:' + e.it.id + (e.check ? ':check' : ''), e })),
+    off: all.filter(x => !TD.isOn(off, x.key, t)).map(x => ({ ...x, until: off[x.key] })) };
+}
+
+function dateRow(e) {
+  const s = S.settings, quiet = e.check && e.d > CHECK_DAYS;
+  const tone = quiet ? 'ok' : e.d < 0 ? 'expired' : e.d < s.eatFirstDays ? 'eatfirst' : e.d < s.soonDays ? 'soon' : 'ok';
+  return `<li class="row s-${tone}"><button class="row-main" data-act="edit" data-id="${esc(e.it.id)}">
+      <span class="daybox d-${tone}"><b>${e.d < 0 ? n0(-e.d) : e.d > 999 ? '999+' : n0(e.d)}</b><small>${e.d < 0 ? 'days over' : e.d === 1 ? 'day' : 'days'}</small></span>
       <span class="row-text"><span class="nm">${esc(e.it.name)}</span><span class="mt">${esc(e.kind)} ${esc(fdate(e.date))}${e.check ? '' : ' · ' + esc(n1(C.num(e.it.qty) || 0)) + ' in stock'}${e.it.location ? ' · ' + esc(e.it.location) : ''}</span></span></button>
       ${e.check ? `<button class="qty" data-act="checked" data-id="${esc(e.it.id)}"><b>✓</b><small>checked</small></button>` : ''}</li>`;
-  const sect = (title, arr) => arr.length ? `<h2 class="sect">${esc(title)} (${arr.length})</h2><ul class="rows">${arr.sort((a, b) => a.d - b.d).map(row).join('')}</ul>` : '';
-  const any = Object.values(buckets).some(a => a.length);
-  return sect('Overdue', buckets.over) + sect(`Checks due within ${CHECK_DAYS} days`, buckets.checks) + sect('Next 30 days', buckets.d30) + sect(`Within ${s.eatFirstDays} days`, buckets.first) +
-    sect(`Within ${s.soonDays} days`, buckets.soon) +
-    (buckets.later.length ? `<details class="fold"><summary>Later (${buckets.later.length})</summary><ul class="rows">${buckets.later.sort((a, b) => a.d - b.d).map(row).join('')}</ul></details>` : '') +
-    (any ? '' : '<p class="empty">Nothing with a date yet. Dates and check intervals you enter on items show up here.</p>') +
-    (undated ? `<p class="note"><a href="#supplies" data-jump="st=nodate">${plural(undated, 'item')} with no date</a>: check the pack and add one.</p>` : '');
+}
+
+function todoRow(x, back) {
+  if (x.kind === 'date') return dateRow(x.e);
+  let icon, cls, nm, mt;
+  if (x.kind === 'gap') {
+    const g = x.g;
+    icon = `<span class="thumb sm a-${esc(g.need)}">${areaIcon(g.need)}</span>`;
+    cls = g.soonestTarget > 0 && g.soonest / g.soonestTarget >= 0.5 ? 'short' : 'bad';
+    nm = `${g.key === 'food:kcal' ? 'Food' : ['food', 'pets'].includes(g.need) ? g.label : g.needName}: add ${gapAmount(g)}`;
+    mt = `${g.soonestIn} lasts ${fmtDays(g.soonest)} of ${plural(g.soonestTarget, 'day')}` + (g.scenarios.length > 1 ? ` · short in ${g.scenarios.length} scenarios` : '');
+  } else {
+    icon = `<span class="thumb sm t-${x.kind}">${svg(x.kind === 'find' ? HELP : FLAG)}</span>`;
+    cls = 'plain'; nm = x.f.text; mt = x.f.section;
+  }
+  if (back) mt = (x.until === 'hide' ? 'Hidden' : 'Put off until ' + fdate(x.until)) + ' · ' + mt;
+  const k = `data-k="${esc(x.key)}"`;
+  return `<li class="row todo s-${cls}"><button class="row-main" data-act="todo-go" ${k}>${icon}<span class="row-text"><span class="nm">${esc(nm)}</span><span class="mt">${esc(mt)}</span></span></button>
+    ${back ? `<button class="qty" data-act="todo-back" ${k}><b>↩</b><small>bring back</small></button>` : `<button class="qty" data-act="todo-later" ${k} aria-label="Put off or hide"><b>···</b><small>later</small></button>`}</li>`;
+}
+
+function viewTodo() {
+  const s = S.settings, m = todoModel(), d = m.dates;
+  const sect = (title, rows, note, n) => rows.length ? `<h2 class="sect">${esc(title)} (${n || rows.length})</h2>${note ? `<p class="note">${esc(note)}</p>` : ''}<ul class="rows">${rows.join('')}</ul>` : '';
+  // Long groups show their first few rows, with the rest one tap away.
+  const list = (title, arr, note, show = 5) => sect(title, arr.slice(0, show).map(x => todoRow(x)), note, arr.length) +
+    (arr.length > show ? `<details class="more"><summary>Show all ${arr.length}</summary><ul class="rows">${arr.slice(show).map(x => todoRow(x)).join('')}</ul></details>` : '');
+  const any = m.now.length + m.gaps.length + m.finds.length + m.flags.length + d.d30.length + d.first.length + d.soon.length + d.later.length + m.off.length;
+  return list('Now', m.now, '', 99) +
+    list('Stock up', m.gaps, 'What to add so every scenario is covered. Drinking water first, then whatever runs out soonest.') +
+    list('Find out', m.finds, 'Until these are known, the app cannot count them.') +
+    list('Worth fixing', m.flags, 'From your answers about your household and situation.') +
+    sect('Next 30 days', d.d30.map(dateRow)) + sect(`Within ${s.eatFirstDays} days`, d.first.map(dateRow)) + sect(`Within ${s.soonDays} days`, d.soon.map(dateRow)) +
+    (d.later.length ? `<details class="fold"><summary>Later (${d.later.length})</summary><ul class="rows">${d.later.map(dateRow).join('')}</ul></details>` : '') +
+    (m.off.length ? `<details class="fold"><summary>Put off or hidden (${m.off.length})</summary><ul class="rows">${m.off.map(x => todoRow(x, true)).join('')}</ul></details>` : '') +
+    (any ? '' : '<p class="empty">Nothing to do right now. Gaps in your scenarios, dates on your items and open questions show up here.</p>') +
+    (d.undated ? `<p class="note"><a href="#supplies" data-jump="st=nodate">${plural(d.undated, 'item')} with no date</a>: check the pack and add one.</p>` : '');
+}
+
+async function todoOff(key, value) {
+  const s = S.settings, off = TD.tidy((s.todo && s.todo.off) || {}, today());
+  if (value) off[key] = value; else delete off[key];
+  s.todo = { ...(s.todo || {}), off };
+  if (await guard(saveSettings)) refresh();
 }
 
 // ---------- view: Log ----------
@@ -603,7 +652,7 @@ function viewMore() {
       <div class="actions">${S.installEvt ? '<button class="btn primary small" data-act="install">Install</button>' : ''}<button class="btn small" data-act="update">Check for update</button></div></div></div>`;
 }
 
-const VIEWS = { ready: viewReady, supplies: viewSupplies, due: viewDue, log: viewLog, more: viewMore };
+const VIEWS = { ready: viewReady, supplies: viewSupplies, todo: viewTodo, log: viewLog, more: viewMore };
 
 function render() {
   const a = document.activeElement, id = a && main.contains(a) ? a.id : '';
@@ -614,7 +663,7 @@ function render() {
     if (l.getAttribute('href') === '#' + S.view) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current');
   });
   const dueSoon = live().filter(it => { const di = dueInfo(it); return di.days !== null && di.days < (di.kind === 'check' ? CHECK_DAYS + 1 : 30) && ((C.num(it.qty) || 0) > 0 || it.area === 'kit'); }).length;
-  const dn = document.querySelector('#nav a[href="#due"]');
+  const dn = document.querySelector('#nav a[href="#todo"]');
   if (dn) { if (dueSoon) dn.dataset.badge = dueSoon > 99 ? '99+' : String(dueSoon); else delete dn.dataset.badge; }
   if (id) {
     const e = document.getElementById(id);
@@ -637,7 +686,7 @@ function renderBanner() {
 
 function route() {
   const h = (location.hash || '').slice(1);
-  S.view = VIEWS[h] ? h : 'ready';
+  S.view = VIEWS[h] ? h : h === 'due' ? 'todo' : 'ready';      // #due is the old name of the To do tab
   render();
   main.scrollTop = 0;
 }
@@ -823,12 +872,12 @@ function suggestLocation(v) {
 }
 
 // ---------- add / edit item ----------
-function openItem(id, preset) {
+function openItem(id, preset, startArea) {
   const s = S.settings;
   const orig = id ? S.items.find(x => x.id === id) : null;
   const isNew = !orig;
   const v = Object.assign({
-    area: S.view === 'supplies' && S.f.area ? S.f.area : 'food', type: '', category: s.foodCategories[0] || '', name: '', brand: '',
+    area: startArea || (S.view === 'supplies' && S.f.area ? S.f.area : 'food'), type: '', category: s.foodCategories[0] || '', name: '', brand: '',
     location: s.locations.includes(S.lastLoc) ? S.lastLoc : s.locations[0] || '', qty: 1, confirmed: true, unitSize: '', unit: 'g', bestBefore: '', kcal: '', protein: '', source: '',
     basis: '', needsCooking: false, cap: '', perDay: '', checkEveryMonths: '', lastChecked: '', minQty: '', barcode: '', notes: '', thumb: '',
   }, orig ? JSON.parse(JSON.stringify(orig)) : {}, preset || {});
@@ -1662,6 +1711,20 @@ document.addEventListener('click', async e => {
     case 'edit': openItem(id); break;
     case 'use': openUse(id); break;
     case 'checked': markChecked(id); break;
+    case 'todo-go': {
+      const m = todoModel(), x = [...m.gaps, ...m.finds, ...m.flags, ...m.off].find(y => y.key === b.dataset.k);
+      if (!x) break;
+      if (x.kind === 'gap') openItem(null, null, x.g.need); else openSituation(x.f.step);
+      break;
+    }
+    case 'todo-later': {
+      const v = await choose('Put this off, or hide it? Either way it stays in the list at the bottom of To do, where you can bring it back.', [['7', 'Put off for a week'], ['30', 'Put off for a month'], ['hide', 'Hide it']]);
+      if (!v) break;
+      await todoOff(b.dataset.k, v === 'hide' ? 'hide' : TD.dayAfter(today(), Number(v)));
+      toast(v === 'hide' ? 'Hidden. It is at the bottom of To do.' : 'Put off. It comes back by itself.');
+      break;
+    }
+    case 'todo-back': await todoOff(b.dataset.k, ''); break;
     case 'scn': openScenario(id); break;
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;

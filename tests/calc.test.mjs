@@ -270,3 +270,55 @@ test('areas switched off are not judged: by default no medical or hygiene need a
   assert.deepEqual(ids, ['water', 'food', 'fuel', 'power', 'pets']);
   assert.ok(C.evaluate(scn('all-off'), [], S, TODAY).needs.some(n => n.id === 'hygiene'));
 });
+
+import * as TD from '../js/todo.js';
+test('gaps: drinking water leads, then whatever runs out soonest', () => {
+  // Food lasts longest, power runs out at once, water sits between: water still leads, then power, then food.
+  const items = [
+    { area: 'water', qty: 10, cap: 1.5, location: 'Home' },
+    food({ qty: 10, kcal: 3200, protein: 120, location: 'Home' }),
+  ];
+  const g = C.gaps(DEFAULT_SCENARIOS, items, S, TODAY);
+  assert.equal(g[0].key, 'water:water');
+  const rest = g.slice(1).map(x => x.soonest);
+  assert.deepEqual(rest, rest.slice().sort((a, b) => a - b));
+  // Nothing is in the bags, so that is where water fails soonest.
+  assert.equal(g[0].soonest, 0); assert.equal(g[0].soonestIn, 'Leave with the bags'); assert.equal(g[0].soonestTarget, 3);
+  const w = C.gaps(DEFAULT_SCENARIOS.filter(x => x.id !== 'bags'), items, S, TODAY)[0];
+  near(w.soonest, 15 / 8.9); assert.equal(w.soonestIn, 'Water cut at home'); assert.equal(w.soonestTarget, 7);
+});
+
+test('to do: dates are bucketed, checks only in their last days, put-off entries come back', () => {
+  const it = (o) => Object.assign({ id: 'x' + Math.random(), area: 'food', qty: 1, name: 'n' }, o);
+  const d = TD.dates([
+    it({ name: 'old', bestBefore: '2026-11-01' }), it({ name: 'month', bestBefore: '2026-12-10' }), it({ name: 'first', bestBefore: '2027-01-15' }),
+    it({ name: 'far', bestBefore: '2028-01-01' }), it({ name: 'none' }), it({ name: 'gone', qty: 0, bestBefore: '2026-11-01' }),
+    it({ name: 'bank', area: 'power', checkEveryMonths: 3, lastChecked: '2026-08-31' }),      // due 30 Nov: within 3 days
+    it({ name: 'bank2', area: 'power', checkEveryMonths: 3, lastChecked: '2026-11-01' }),     // due Feb: later
+  ], S, '2026-11-29');
+  assert.deepEqual(d.over.map(e => e.it.name), ['old']);
+  assert.deepEqual(d.checks.map(e => e.it.name), ['bank']);
+  assert.deepEqual(d.d30.map(e => e.it.name), ['month']);
+  assert.deepEqual(d.first.map(e => e.it.name), ['first']);
+  assert.deepEqual(d.later.map(e => e.it.name).sort(), ['bank2', 'far']);
+  assert.equal(d.undated, 1);
+  const off = { a: 'hide', b: '2026-12-06', c: '2026-11-29' };
+  assert.equal(TD.isOn(off, 'a', '2026-11-29'), false); assert.equal(TD.isOn(off, 'b', '2026-11-29'), false);
+  assert.equal(TD.isOn(off, 'b', '2026-12-06'), true); assert.equal(TD.isOn(off, 'zzz', '2026-11-29'), true);
+  assert.deepEqual(TD.tidy(off, '2026-11-29'), { a: 'hide', b: '2026-12-06' });
+  assert.equal(TD.dayAfter('2026-12-28', 7), '2027-01-04');
+  assert.deepEqual(TD.next([['g1', 'g2', 'g3'], ['d1'], [], ['f1']], 3), ['g1', 'd1', 'f1']);
+  assert.deepEqual(TD.next([['g1', 'g2', 'g3'], [], []], 3), ['g1', 'g2', 'g3']);
+});
+
+test('situation: "not sure" becomes a job, and key questions wait for an answer', () => {
+  const f = SIT.findOuts({ tapInCut: 'dk', cooking: ['cylinder'], containers: 'small' }, {});
+  assert.deepEqual(f.map(x => x.key), ['find:tapInCut', 'find:treat']);
+  assert.ok(f[0].unknown && /building management/.test(f[0].text));
+  assert.ok(!f[1].unknown && f[1].text.startsWith('Answer: '));
+  assert.equal(f[0].step, 2); assert.equal(f[1].step, 3);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], containers: 'small' }, { treat: 'A still' }), []);
+  // "not sure" no longer doubles as a flag
+  assert.deepEqual(SIT.flags({ tapInCut: 'dk' }), []);
+  assert.equal(SIT.flags({ containers: 'none' })[0].key, 'flag:containers:none');
+});

@@ -347,3 +347,13 @@ fieldset.q legend small { font-weight: 400; color: var(--muted); font-size: 12px
 
 .chip.other { border-style: dashed; }
 .otherbox { width: 100%; }
+
+/* To do: rows that carry a sentence, a chooser dialog, and the next actions on Ready */
+.row.todo .nm { display: block; -webkit-line-clamp: unset; overflow: visible; font-weight: 600; }
+.row.todo .row-main { align-items: flex-start; }
+.row.todo .qty { width: 62px; } .row.todo .qty b { font-size: 18px; letter-spacing: 1px; color: var(--muted); }
+.thumb.t-find, .thumb.t-flag { background: var(--accent-soft); color: var(--accent); }
+.choices { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 12px; }
+.choices .btn { justify-content: flex-start; min-height: 48px; }
+.nextcard .rows { margin-top: 8px; } .nextcard a.state { color: var(--accent); font-weight: 600; text-decoration: none; }
+h2.sect + .note { margin: -4px 0 2px; }

@@ -16,12 +16,12 @@ export const SECTIONS = [
   { id: 'home', title: 'Your home', intro: 'What the building gives you, and what it takes away, when services stop.', qs: [
     { id: 'homeType', q: 'What kind of home?', opts: [['highrise', 'Condo or flat'], ['landed', 'Landed house'], ['other', 'Other']] },
     { id: 'floor', q: 'Which floor?', opts: [['ground', 'Ground'], ['low', '1 to 5'], ['mid', '6 to 15'], ['high', '16 or above', 'On a high floor, a power cut means stairs for every trip and for carrying water.']] },
-    { id: 'tapInCut', q: 'In a power cut, does water still come out of the taps?', opts: [['yes', 'Yes'], ['while', 'For a while, then stops'], ['no', 'No', 'No tap water in a power cut, so every power cut is also a water cut for you.'], [DK[0], DK[1], 'Find out from building management whether taps run in a power cut, and for how long.']] },
+    { id: 'tapInCut', q: 'In a power cut, does water still come out of the taps?', opts: [['yes', 'Yes'], ['while', 'For a while, then stops'], ['no', 'No', 'No tap water in a power cut, so every power cut is also a water cut for you.'], [DK[0], DK[1]]], find: 'Ask building management whether the taps run in a power cut, and for how long.' },
     { id: 'cooking', q: 'How do you normally cook?', opts: [['mains', 'Piped gas'], ['cylinder', 'Gas cylinder'], ['electric', 'Electric or induction'], ['portable', 'Portable stove only']], multi: true },
     { id: 'backup', q: 'What backup power do you have?', opts: [['none', 'None', 'No backup power at all. A power bank per phone is the first step.'], ['banks', 'Power banks'], ['station', 'Power station'], ['generator', 'Generator'], ['solar', 'Solar panel']], multi: true },
-    { id: 'heat', q: 'Without power, can the home stay bearable?', opts: [['yes', 'Yes, windows and airflow'], ['hot', 'It gets very hot', 'The home gets very hot without power. Battery fans and extra drinking water belong on the list.'], [DK[0], DK[1]]] },
-    { id: 'flood', q: 'Does your street or car park flood?', opts: [['never', 'Never'], ['sometimes', 'Sometimes'], ['often', 'Often', 'Flooding is common where you live. Decide in advance where the car goes when heavy rain is forecast.'], [DK[0], DK[1]]] },
-    { id: 'access', q: 'Does getting in or out depend on power?', opts: [['no', 'No'], ['lifts', 'Lifts only'], ['doors', 'Access cards or electric gates', 'Doors or gates need power. Find out how they open in a power cut.'], [DK[0], DK[1]]], multi: true },
+    { id: 'heat', q: 'Without power, can the home stay bearable?', opts: [['yes', 'Yes, windows and airflow'], ['hot', 'It gets very hot', 'The home gets very hot without power. Battery fans and extra drinking water belong on the list.'], [DK[0], DK[1]]], find: 'Switch the air-con and fans off for an afternoon to see how hot the home gets without power.' },
+    { id: 'flood', q: 'Does your street or car park flood?', opts: [['never', 'Never'], ['sometimes', 'Sometimes'], ['often', 'Often', 'Flooding is common where you live. Decide in advance where the car goes when heavy rain is forecast.'], [DK[0], DK[1]]], find: 'Ask neighbours or management whether your street or car park floods.' },
+    { id: 'access', q: 'Does getting in or out depend on power?', opts: [['no', 'No'], ['lifts', 'Lifts only'], ['doors', 'Access cards or electric gates', 'Doors or gates need power. Find out how they open in a power cut.'], [DK[0], DK[1]]], multi: true, find: 'Find out how the doors, gates and lifts work in a power cut.' },
     { id: 'space', q: 'How much room is there to store supplies?', opts: [['little', 'Very little'], ['some', 'Some'], ['plenty', 'Plenty']] },
   ] },
   { id: 'water', title: 'Water', intro: 'Where water comes from when the tap does not.', qs: [
@@ -29,7 +29,7 @@ export const SECTIONS = [
     { id: 'containers', q: 'Empty containers you could fill, in total?', opts: [['none', 'None', 'No containers to fill. They are cheap, and filling them when a cut is announced is the best single step.'], ['small', 'Under 20 L'], ['medium', '20 to 60 L'], ['large', 'Over 60 L']] },
     { id: 'tub', q: 'A bathtub or large tank you could fill?', opts: [['yes', 'Yes'], ['no', 'No']] },
     { id: 'treat', q: 'How could you make water safe to drink?', opts: [['boil', 'Boil it'], ['filter', 'A filter'], ['tablets', 'Tablets or drops'], ['none', 'No way yet', 'No way to treat water. Stored bottles are then your only drinking water.']], multi: true },
-    { id: 'source', q: 'Any water nearby if the taps stay off?', opts: [['pool', 'A pool'], ['river', 'River or lake'], ['rain', 'Rain I could collect'], ['none', 'Nothing', 'No other water source nearby, so long cuts depend entirely on what you store.'], [DK[0], DK[1]]], multi: true },
+    { id: 'source', q: 'Any water nearby if the taps stay off?', opts: [['pool', 'A pool'], ['river', 'River or lake'], ['rain', 'Rain I could collect'], ['none', 'Nothing', 'No other water source nearby, so long cuts depend entirely on what you store.'], [DK[0], DK[1]]], multi: true, find: 'Look for water near home you could use if the taps stay off: a pool, a river, somewhere to catch rain.' },
   ] },
   { id: 'toilet', title: 'Toilet and hygiene', intro: 'Flushing needs far more water than drinking.', qs: [
     { id: 'toiletPlan', q: 'With no tap water, what is the toilet plan?', opts: [['flush', 'Flush with a bucket'], ['bags', 'Lined bucket and bags'], ['none', 'No plan yet', 'No toilet plan for a water cut. Strong bags and a bucket solve it for very little.']] },
@@ -67,7 +67,7 @@ export const SECTIONS = [
   ] },
   { id: 'area', title: 'Your area', intro: 'What is around you, and what you think is most likely.', qs: [
     { id: 'worries', q: 'Which events concern you most?', opts: [['flood', 'Flood'], ['power', 'Long power cut'], ['water', 'Long water cut'], ['haze', 'Haze'], ['unrest', 'Unrest'], ['lockdown', 'Lockdown or outbreak'], ['quake', 'Earthquake'], ['fire', 'Fire'], ['supply', 'Shops empty'], ['war', 'War']], multi: true },
-    { id: 'hospital', q: 'How far is the nearest hospital?', opts: [['near', 'Under 5 km'], ['mid', '5 to 20 km'], ['far', 'Over 20 km'], [DK[0], DK[1]]] },
+    { id: 'hospital', q: 'How far is the nearest hospital?', opts: [['near', 'Under 5 km'], ['mid', '5 to 20 km'], ['far', 'Over 20 km'], [DK[0], DK[1]]], find: 'Find the nearest hospital and how long it takes to reach.' },
     { id: 'neighbours', q: 'Neighbours you could rely on?', opts: [['several', 'Several'], ['few', 'One or two'], ['none', 'None', 'No neighbours you could rely on. Knowing one or two is worth more than most gear.']] },
     { id: 'mgmt', q: 'Do you have building or area management contacts?', opts: [['yes', 'Yes'], ['no', 'No']] },
   ] },
@@ -75,7 +75,7 @@ export const SECTIONS = [
     { id: 'cash', q: 'Cash at home would cover how long?', opts: [['none', 'None', 'No cash at home. Card machines and cash machines stop in a power cut.'], ['days', 'A few days'], ['weeks', 'Two weeks'], ['month', 'A month or more']] },
     { id: 'smallNotes', q: 'Is some of it in small notes?', opts: [['yes', 'Yes'], ['no', 'No']] },
     { id: 'docs', q: 'Copies of key documents?', opts: [['paper', 'Paper copies'], ['digital', 'Digital copies'], ['none', 'None', 'No copies of key documents. Photograph them and keep a paper set in a bag.']], multi: true },
-    { id: 'passports', q: 'Passports valid for at least six months?', opts: [['yes', 'Yes'], ['no', 'No'], [DK[0], DK[1]]] },
+    { id: 'passports', q: 'Passports valid for at least six months?', opts: [['yes', 'Yes'], ['no', 'No'], [DK[0], DK[1]]], find: 'Check the expiry dates on your passports.' },
     { id: 'insurance', q: 'Do you know what your insurance covers?', opts: [['yes', 'Yes'], ['no', 'No']] },
   ] },
   { id: 'pets', title: 'Your pets', intro: 'Skip this if you have none.', qs: [
@@ -101,10 +101,24 @@ export function progress(answers, other) {
   return { done, total: ALL.length };
 }
 
-/** What the answers flag, most basic needs first (the order of the sections). */
+/** What the answers flag, most basic needs first (the order of the sections). step is the questionnaire screen to open. */
 export function flags(answers) {
   const out = [];
-  for (const s of SECTIONS) for (const q of s.qs) for (const o of q.opts) if (o[2] && picked(answers, q).includes(o[0])) out.push({ section: s.title, text: o[2] });
+  SECTIONS.forEach((s, i) => { for (const q of s.qs) for (const o of q.opts) if (o[2] && picked(answers, q).includes(o[0])) out.push({ key: 'flag:' + q.id + ':' + o[0], step: i + 1, section: s.title, text: o[2] }); });
+  return out;
+}
+
+// The answers that change the result most. Until they are given, answering them is a job in itself.
+export const KEY = ['tapInCut', 'cooking', 'containers', 'treat'];
+
+/** Jobs the questionnaire creates: every "not sure" is something to find out, and each key question still waits for an answer. */
+export function findOuts(answers, other) {
+  const out = [];
+  SECTIONS.forEach((s, i) => { for (const q of s.qs) {
+    const p = picked(answers, q);
+    if (p.includes(DK[0])) out.push({ key: 'find:' + q.id, qid: q.id, step: i + 1, section: s.title, text: q.find || 'Find out: ' + q.q, unknown: true });
+    else if (KEY.includes(q.id) && !p.length && !(other && other[q.id])) out.push({ key: 'find:' + q.id, qid: q.id, step: i + 1, section: s.title, text: 'Answer: ' + q.q, unknown: false });
+  } });
   return out;
 }
 
