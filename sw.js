@@ -1,8 +1,8 @@
 // Service worker: keeps a copy of the app on the device so it opens with no connection.
 // VERSION changes whenever any app file changes (tools/stamp.py), which is how installed copies pick up an update.
-const VERSION = "3d8932c044b3";
+const VERSION = "befdec27fdbb";
 const CACHE = 'prep-' + VERSION;
-const FILES = ["./", "./index.html", "./styles.css", "./manifest.webmanifest", "./js/advisor.js", "./js/app.js", "./js/calc.js", "./js/db.js", "./js/defaults.js", "./js/reader.js", "./js/sync.js", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./fonts/bc-600.woff2", "./fonts/bc-700.woff2"];
+const FILES = ["./", "./index.html", "./styles.css", "./manifest.webmanifest", "./js/advisor.js", "./js/app.js", "./js/calc.js", "./js/db.js", "./js/defaults.js", "./js/reader.js", "./js/situation.js", "./js/sync.js", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./fonts/bc-600.woff2", "./fonts/bc-700.woff2"];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache =>

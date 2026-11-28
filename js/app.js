@@ -6,8 +6,9 @@ import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 import * as SY from './sync.js';
+import * as SIT from './situation.js';
 
-const APP_VERSION = '1.13.0';
+const APP_VERSION = '1.14.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -573,6 +574,11 @@ function viewMore() {
       <label class="f">API key<input id="k-key" class="secret" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${S.apiKey ? 'Saved. Paste a new one to replace it' : 'sk-ant-…'}"></label>
       <label class="f">Model<select id="k-model">${MODELS.map(m => opt(m.id, m.label, s.apiModel)).join('')}</select></label>
       <div class="actions">${S.apiKey ? '<button class="btn danger" type="button" data-act="key-remove">Remove key</button><button class="btn" type="button" data-act="key-test">Test</button>' : ''}<button class="btn primary" type="submit">Save</button></div>`, 'form', ' id="key-form"') +
+
+    fold('situation', 'Your situation', (() => { const p = SIT.progress((s.situation || {}).answers); return `${p.done} of ${p.total} answered`; })(), `
+      <p class="note">Tap-through questions about your home, water, vehicle, bags, other places and plan. The answers flag gaps your supplies cannot show, and Ask Claude uses them. No addresses.</p>
+      <div class="actions start"><button class="btn primary small" data-act="situation">${SIT.progress((s.situation || {}).answers).done ? 'Continue the questions' : 'Answer the questions'}</button>
+        ${SIT.flags((s.situation || {}).answers).length ? `<button class="btn small" data-act="situation" data-v="end">See what it flags (${SIT.flags((s.situation || {}).answers).length})</button>` : ''}</div>`) +
 
     fold('sync', 'Sync between devices', S.sync.code ? 'On' : 'Off', S.sync.code ? `
       <p class="note" id="sync-state">${esc(syncText())}</p>
@@ -1354,6 +1360,75 @@ function openMeals() {
   });
 }
 
+// ---------- your situation: a tap-through questionnaire ----------
+function openSituation(startAt) {
+  const s = S.settings;
+  const sit = s.situation = Object.assign({ answers: {}, notes: {}, kinds: {} }, s.situation || {});
+  const last = SIT.SECTIONS.length + 1;                 // 0 = locations, 1..n = sections, n+1 = summary
+  let step = Math.max(0, Math.min(last, startAt || 0)), dirty = false;
+  const save = async () => { if (dirty) { dirty = false; await guard(saveSettings); } };
+  const head = t => `<div class="dlg-head"><h2>${esc(t)}</h2><button class="btn small" type="button" data-x="close">Close</button></div>
+    <div class="bar"><i style="width:${(step / last * 100).toFixed(0)}%"></i></div>`;
+  const foot = next => `<div class="dlg-foot">${step ? '<button class="btn small" data-x="back">Back</button>' : ''}<button class="btn primary grow" data-x="next">${next}</button></div>`;
+  const paint = () => {
+    if (step === 0) {
+      dlg.innerHTML = `<div class="dlg">${head('Your places')}
+        <p class="note">A few minutes of tapping. Skip anything; you can come back. No addresses are asked for. First, what is each of your locations?</p>
+        ${s.locations.map((l, i) => `<label class="f">${esc(l)}<select data-kind="${i}">${opt('', 'Choose…', sit.kinds[l] || '')}${SIT.KINDS.map(k => opt(k[0], k[1], sit.kinds[l] || '')).join('')}</select></label>`).join('')}
+        <p class="note">Add or rename locations under More → Locations and categories.</p>${foot('Next')}</div>`;
+    } else if (step < last) {
+      const sec = SIT.SECTIONS[step - 1];
+      dlg.innerHTML = `<div class="dlg">${head(sec.title)}<p class="note">${esc(sec.intro)} ${step} of ${SIT.SECTIONS.length}.</p>
+        ${sec.qs.map(q => { const cur = [].concat(sit.answers[q.id] || []); return `<fieldset class="q"><legend>${esc(q.q)}${q.multi ? ' <small>Pick any</small>' : ''}</legend><div class="chipwrap">${q.opts.map(o =>
+          `<button class="chip" type="button" data-q="${q.id}" data-v="${o[0]}" aria-pressed="${cur.includes(o[0])}">${esc(o[1])}</button>`).join('')}</div></fieldset>`; }).join('')}
+        <label class="f">Anything to add about this (optional)<textarea id="sit-note" rows="2">${esc(sit.notes[sec.id] || '')}</textarea></label>
+        ${foot(step === last - 1 ? 'Finish' : 'Next')}</div>`;
+    } else {
+      const p = SIT.progress(sit.answers), fl = SIT.flags(sit.answers);
+      dlg.innerHTML = `<div class="dlg">${head('What your answers show')}
+        <p>${p.done} of ${p.total} questions answered.${p.done < p.total ? ' Go back any time to fill in the rest.' : ''}</p>
+        ${fl.length ? `<ul class="finds">${fl.map(f => `<li class="f-medium"><b>${esc(f.section)}</b><span class="todo">${esc(f.text)}</span></li>`).join('')}</ul>` : `<p class="note">${p.done ? 'Nothing flagged by the answers so far.' : 'No answers yet.'}</p>`}
+        <p class="note">These flags come from fixed rules in the app, not from AI. For a fuller read that also looks at your supplies, ask Claude.</p>
+        <div class="dlg-foot"><button class="btn small" data-x="back">Back</button><button class="btn grow" data-x="review">Ask Claude to review</button><button class="btn primary" data-x="close">Done</button></div></div>`;
+    }
+    dlg.scrollTop = 0;
+  };
+  const keepNote = () => { const n = $('#sit-note', dlg); if (!n || step < 1 || step >= last) return; const id = SIT.SECTIONS[step - 1].id, v = n.value.trim().slice(0, 600); if ((sit.notes[id] || '') !== v) { if (v) sit.notes[id] = v; else delete sit.notes[id]; dirty = true; } };
+  openDlg(() => {
+    dlgCleanup = () => { keepNote(); save().then(() => { if (S.view === 'more' || S.view === 'ready') render(); }); };
+    paint();
+    dlg.onchange = e => {
+      const k = e.target.dataset.kind;
+      if (k === undefined) return;
+      const loc = s.locations[Number(k)];
+      if (e.target.value) sit.kinds[loc] = e.target.value; else delete sit.kinds[loc];
+      dirty = true;
+    };
+    dlg.onclick = async e => {
+      const c = e.target.closest('[data-q]');
+      if (c) {
+        const q = SIT.SECTIONS[step - 1].qs.find(x => x.id === c.dataset.q), v = c.dataset.v, lone = ['none', 'no', 'dk', 'na'];
+        let cur = [].concat(sit.answers[q.id] || []);
+        if (!q.multi) cur = cur.includes(v) ? [] : [v];
+        else if (cur.includes(v)) cur = cur.filter(x => x !== v);
+        else cur = lone.includes(v) ? [v] : cur.filter(x => !lone.includes(x)).concat(v);      // "none" and a real answer cannot both stand
+        if (cur.length) sit.answers[q.id] = q.multi ? cur : cur[0]; else delete sit.answers[q.id];
+        dirty = true;
+        dlg.querySelectorAll(`[data-q="${q.id}"]`).forEach(b => b.setAttribute('aria-pressed', String(cur.includes(b.dataset.v))));
+        return;
+      }
+      const b = e.target.closest('[data-x]');
+      if (!b) return;
+      const x = b.dataset.x;
+      if (x === 'close') return dlg.close();
+      keepNote(); await save();
+      if (x === 'review') { dlg.close(); return openAdvisor('review'); }
+      step = Math.max(0, Math.min(last, step + (x === 'back' ? -1 : 1)));
+      paint();
+    };
+  });
+}
+
 // ---------- ask Claude: where things should go, and a review ----------
 async function applyMoves(moves) {
   let done = 0;
@@ -1389,7 +1464,8 @@ function openAdvisor(kind) {
       dlg.innerHTML = `<div class="dlg">${head}
         <p class="note">${place ? 'Claude looks at everything you have and every location, and proposes what to move where. You choose which moves to apply.' : 'Claude reads your whole list and tells you what most needs attention.'}</p>
         <label class="f">Tell Claude about your locations and situation (saved on this phone)<textarea id="a-note" rows="4" placeholder="For example: Tank 300 is the car, parked in a hot basement. The two Osprey bags stay by the door.">${esc(s.adviceNote || '')}</textarea></label>
-        <div class="banner info"><span>Sends ${plural(items.length, 'item')} (names, amounts, dates, locations), your household figures and this note to Anthropic with your key. No photos.</span></div>
+        <div class="banner info"><span>Sends ${plural(items.length, 'item')} (names, amounts, dates, locations), your household figures, your situation answers and this note to Anthropic with your key. No photos.</span></div>
+        ${SIT.progress((s.situation || {}).answers).done ? '' : '<p class="note">Tip: answering the situation questions under More gives Claude far more to work with.</p>'}
         ${error ? `<div class="banner bad"><span>${esc(error)}</span></div>` : ''}
         <div class="actions"><button class="btn primary" data-x="go">Ask Claude</button></div></div>`;
     } else if (stage === 'loading') {
@@ -1421,7 +1497,9 @@ function openAdvisor(kind) {
         (r.needs.length ? r.needs.map(n => `${n.name} ${n.logged ? fmtDays(n.days) + ' days' : 'nothing logged'}`).join('; ') : 'nothing needs stocking') + '.';
     }).join('\n');
     const kindOf = it => areaOf(it.area).name + ' / ' + (it.area === 'food' ? it.category : typeLabel(it.area, it.type));
-    const prompt = ADV.context({ settings: s, locations: s.locations, scenarioLines, note, today: today() }) + '\n\nItems:\n' +
+    const sitText = SIT.summary(s.situation, s.locations);
+    const prompt = ADV.context({ settings: s, locations: s.locations, scenarioLines, note, today: today() }) +
+      (sitText ? '\n\nTheir answers to a questionnaire about their situation (anything not listed was left unanswered, so do not assume it):\n' + sitText : '') + '\n\nItems:\n' +
       ADV.itemLines(items.map(it => ({ ...it, capUnit: areaOf(it.area).capUnit })), kindOf);
     try {
       const json = await askJson({ apiKey: S.apiKey, model: s.apiModel, system: place ? ADV.PLACE_SYSTEM : ADV.REVIEW_SYSTEM, prompt });
@@ -1534,6 +1612,7 @@ document.addEventListener('click', async e => {
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
     case 'advise': openAdvisor(b.dataset.v); break;
+    case 'situation': openSituation(b.dataset.v === 'end' ? 999 : 0); break;
     case 'sync-now': b.disabled = true; if (await syncNow()) toast('Synced.'); else toast(syncText()); render(); break;
     case 'sync-code': S.sync.show = !S.sync.show; render(); break;
     case 'sync-copy':

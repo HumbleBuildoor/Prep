@@ -245,3 +245,17 @@ test('sync merge: both devices using stock both count, later edit wins, tombston
   assert.equal(m.items.find(i => i.id === 'i2').deleted, true);
   assert.deepEqual(Object.keys(m.meta), ['scenarios']);             // the older settings do not replace newer local ones
 });
+
+import * as SIT from '../js/situation.js';
+test('situation: every question and option id is unique, and flags and summary follow the answers', () => {
+  const ids = SIT.SECTIONS.flatMap(s => s.qs.map(q => q.id));
+  assert.equal(new Set(ids).size, ids.length);
+  for (const s of SIT.SECTIONS) for (const q of s.qs) assert.equal(new Set(q.opts.map(o => o[0])).size, q.opts.length, q.id);
+  const answers = { containers: 'none', treat: ['boil', 'filter'], rally: 'no' };
+  assert.deepEqual(SIT.progress(answers), { done: 3, total: ids.length });
+  assert.deepEqual(SIT.flags(answers).map(f => f.section), ['Water', 'Your plan']);
+  const text = SIT.summary({ answers, notes: { water: 'Pool on level 5' }, kinds: { 'Tank 300': 'vehicle' } }, ['Home', 'Tank 300']);
+  assert.match(text, /Locations: Tank 300 is a vehicle\./);
+  assert.match(text, /Water — .*How could you make water safe to drink\? Boil it, A filter\. Note: Pool on level 5/);
+  assert.equal(SIT.summary({}, []), '');
+});

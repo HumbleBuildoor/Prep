@@ -335,3 +335,12 @@ ul.finds b { font-size: 15px; } ul.finds span { color: var(--muted); } ul.finds 
 ul.plain { list-style: none; margin: 0; padding: 0; font-size: 14px; }
 ul.plain li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 ul.plain li:last-child { border-bottom: 0; }
+
+/* ----- situation questionnaire ----- */
+fieldset.q { border: 0; padding: 0; gap: 8px; }
+fieldset.q legend { padding: 0; font-weight: 600; font-size: 15px; margin-bottom: 2px; }
+fieldset.q legend small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 4px; }
+.chipwrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.chipwrap .chip { min-height: 42px; }
+.chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+.dlg > .bar i { background: var(--accent); }
