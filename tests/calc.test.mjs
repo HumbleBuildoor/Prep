@@ -258,4 +258,8 @@ test('situation: every question and option id is unique, and flags and summary f
   assert.match(text, /Locations: Tank 300 is a vehicle\./);
   assert.match(text, /Water — .*How could you make water safe to drink\? Boil it, A filter\. Note: Pool on level 5/);
   assert.equal(SIT.summary({}, []), '');
+  assert.equal(SIT.progress({}, { cash: 'Gold and USDT' }).done, 1);
+  const own = SIT.summary({ answers: { cash: 'days' }, other: { cash: 'Also some foreign notes', fuelType: 'LPG conversion' } }, []);
+  assert.match(own, /A few days, in their own words: Also some foreign notes\./);
+  assert.match(own, /What does it run on\? in their own words: LPG conversion\./);
 });

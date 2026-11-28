@@ -96,8 +96,8 @@ export const SECTIONS = [
 const ALL = SECTIONS.flatMap(s => s.qs);
 const picked = (a, q) => { const v = a ? a[q.id] : undefined; return Array.isArray(v) ? v : v ? [v] : []; };
 
-export function progress(answers) {
-  const done = ALL.filter(q => picked(answers, q).length).length;
+export function progress(answers, other) {
+  const done = ALL.filter(q => picked(answers, q).length || (other && other[q.id])).length;
   return { done, total: ALL.length };
 }
 
@@ -110,11 +110,11 @@ export function flags(answers) {
 
 /** Plain text of everything answered, for Ask Claude. */
 export function summary(sit, locations) {
-  const a = (sit && sit.answers) || {}, notes = (sit && sit.notes) || {}, kinds = (sit && sit.kinds) || {}, lines = [];
+  const a = (sit && sit.answers) || {}, notes = (sit && sit.notes) || {}, kinds = (sit && sit.kinds) || {}, other = (sit && sit.other) || {}, lines = [];
   const named = (locations || []).filter(l => kinds[l]).map(l => `${l} is a ${(KINDS.find(k => k[0] === kinds[l]) || ['', kinds[l]])[1].toLowerCase()}`);
   if (named.length) lines.push('Locations: ' + named.join('; ') + '.');
   for (const s of SECTIONS) {
-    const parts = s.qs.filter(q => picked(a, q).length).map(q => `${q.q} ${picked(a, q).map(v => (q.opts.find(o => o[0] === v) || [v, v])[1]).join(', ')}.`);
+    const parts = s.qs.filter(q => picked(a, q).length || other[q.id]).map(q => `${q.q} ${picked(a, q).map(v => (q.opts.find(o => o[0] === v) || [v, v])[1]).concat(other[q.id] ? ['in their own words: ' + other[q.id]] : []).join(', ')}.`);
     if (notes[s.id]) parts.push('Note: ' + notes[s.id]);
     if (parts.length) lines.push(s.title + ' — ' + parts.join(' '));
   }

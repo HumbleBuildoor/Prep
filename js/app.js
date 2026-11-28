@@ -8,7 +8,7 @@ import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 import * as SIT from './situation.js';
 
-const APP_VERSION = '1.14.0';
+const APP_VERSION = '1.14.1';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -575,9 +575,9 @@ function viewMore() {
       <label class="f">Model<select id="k-model">${MODELS.map(m => opt(m.id, m.label, s.apiModel)).join('')}</select></label>
       <div class="actions">${S.apiKey ? '<button class="btn danger" type="button" data-act="key-remove">Remove key</button><button class="btn" type="button" data-act="key-test">Test</button>' : ''}<button class="btn primary" type="submit">Save</button></div>`, 'form', ' id="key-form"') +
 
-    fold('situation', 'Your situation', (() => { const p = SIT.progress((s.situation || {}).answers); return `${p.done} of ${p.total} answered`; })(), `
+    fold('situation', 'Your situation', (() => { const p = SIT.progress((s.situation || {}).answers, (s.situation || {}).other); return `${p.done} of ${p.total} answered`; })(), `
       <p class="note">Tap-through questions about your home, water, vehicle, bags, other places and plan. The answers flag gaps your supplies cannot show, and Ask Claude uses them. No addresses.</p>
-      <div class="actions start"><button class="btn primary small" data-act="situation">${SIT.progress((s.situation || {}).answers).done ? 'Continue the questions' : 'Answer the questions'}</button>
+      <div class="actions start"><button class="btn primary small" data-act="situation">${SIT.progress((s.situation || {}).answers, (s.situation || {}).other).done ? 'Continue the questions' : 'Answer the questions'}</button>
         ${SIT.flags((s.situation || {}).answers).length ? `<button class="btn small" data-act="situation" data-v="end">See what it flags (${SIT.flags((s.situation || {}).answers).length})</button>` : ''}</div>`) +
 
     fold('sync', 'Sync between devices', S.sync.code ? 'On' : 'Off', S.sync.code ? `
@@ -1363,7 +1363,7 @@ function openMeals() {
 // ---------- your situation: a tap-through questionnaire ----------
 function openSituation(startAt) {
   const s = S.settings;
-  const sit = s.situation = Object.assign({ answers: {}, notes: {}, kinds: {} }, s.situation || {});
+  const sit = s.situation = Object.assign({ answers: {}, notes: {}, kinds: {}, other: {} }, s.situation || {});
   const last = SIT.SECTIONS.length + 1;                 // 0 = locations, 1..n = sections, n+1 = summary
   let step = Math.max(0, Math.min(last, startAt || 0)), dirty = false;
   const save = async () => { if (dirty) { dirty = false; await guard(saveSettings); } };
@@ -1380,11 +1380,12 @@ function openSituation(startAt) {
       const sec = SIT.SECTIONS[step - 1];
       dlg.innerHTML = `<div class="dlg">${head(sec.title)}<p class="note">${esc(sec.intro)} ${step} of ${SIT.SECTIONS.length}.</p>
         ${sec.qs.map(q => { const cur = [].concat(sit.answers[q.id] || []); return `<fieldset class="q"><legend>${esc(q.q)}${q.multi ? ' <small>Pick any</small>' : ''}</legend><div class="chipwrap">${q.opts.map(o =>
-          `<button class="chip" type="button" data-q="${q.id}" data-v="${o[0]}" aria-pressed="${cur.includes(o[0])}">${esc(o[1])}</button>`).join('')}</div></fieldset>`; }).join('')}
+          `<button class="chip" type="button" data-q="${q.id}" data-v="${o[0]}" aria-pressed="${cur.includes(o[0])}">${esc(o[1])}</button>`).join('')}<button class="chip other" type="button" data-oq="${q.id}" aria-pressed="${!!sit.other[q.id]}">Other…</button></div>
+          <input class="otherbox" data-other="${q.id}" maxlength="200" placeholder="Type your own answer" aria-label="Your own answer" value="${esc(sit.other[q.id] || '')}"${sit.other[q.id] ? '' : ' hidden'}></fieldset>`; }).join('')}
         <label class="f">Anything to add about this (optional)<textarea id="sit-note" rows="2">${esc(sit.notes[sec.id] || '')}</textarea></label>
         ${foot(step === last - 1 ? 'Finish' : 'Next')}</div>`;
     } else {
-      const p = SIT.progress(sit.answers), fl = SIT.flags(sit.answers);
+      const p = SIT.progress(sit.answers, sit.other), fl = SIT.flags(sit.answers);
       dlg.innerHTML = `<div class="dlg">${head('What your answers show')}
         <p>${p.done} of ${p.total} questions answered.${p.done < p.total ? ' Go back any time to fill in the rest.' : ''}</p>
         ${fl.length ? `<ul class="finds">${fl.map(f => `<li class="f-medium"><b>${esc(f.section)}</b><span class="todo">${esc(f.text)}</span></li>`).join('')}</ul>` : `<p class="note">${p.done ? 'Nothing flagged by the answers so far.' : 'No answers yet.'}</p>`}
@@ -1404,7 +1405,17 @@ function openSituation(startAt) {
       if (e.target.value) sit.kinds[loc] = e.target.value; else delete sit.kinds[loc];
       dirty = true;
     };
+    dlg.oninput = e => {
+      const q = e.target.dataset.other;
+      if (q === undefined) return;
+      const v = e.target.value.trim();
+      if (v) sit.other[q] = v; else delete sit.other[q];
+      dirty = true;
+      const chip = dlg.querySelector(`[data-oq="${q}"]`); if (chip) chip.setAttribute('aria-pressed', String(!!v));
+    };
     dlg.onclick = async e => {
+      const o = e.target.closest('[data-oq]');
+      if (o) { const box = dlg.querySelector(`[data-other="${o.dataset.oq}"]`); box.hidden = !box.hidden && !box.value; if (!box.hidden) box.focus(); return; }
       const c = e.target.closest('[data-q]');
       if (c) {
         const q = SIT.SECTIONS[step - 1].qs.find(x => x.id === c.dataset.q), v = c.dataset.v, lone = ['none', 'no', 'dk', 'na'];
@@ -1465,7 +1476,7 @@ function openAdvisor(kind) {
         <p class="note">${place ? 'Claude looks at everything you have and every location, and proposes what to move where. You choose which moves to apply.' : 'Claude reads your whole list and tells you what most needs attention.'}</p>
         <label class="f">Tell Claude about your locations and situation (saved on this phone)<textarea id="a-note" rows="4" placeholder="For example: Tank 300 is the car, parked in a hot basement. The two Osprey bags stay by the door.">${esc(s.adviceNote || '')}</textarea></label>
         <div class="banner info"><span>Sends ${plural(items.length, 'item')} (names, amounts, dates, locations), your household figures, your situation answers and this note to Anthropic with your key. No photos.</span></div>
-        ${SIT.progress((s.situation || {}).answers).done ? '' : '<p class="note">Tip: answering the situation questions under More gives Claude far more to work with.</p>'}
+        ${SIT.progress((s.situation || {}).answers, (s.situation || {}).other).done ? '' : '<p class="note">Tip: answering the situation questions under More gives Claude far more to work with.</p>'}
         ${error ? `<div class="banner bad"><span>${esc(error)}</span></div>` : ''}
         <div class="actions"><button class="btn primary" data-x="go">Ask Claude</button></div></div>`;
     } else if (stage === 'loading') {

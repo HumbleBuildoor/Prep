@@ -344,3 +344,6 @@ fieldset.q legend small { font-weight: 400; color: var(--muted); font-size: 12px
 .chipwrap .chip { min-height: 42px; }
 .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .dlg > .bar i { background: var(--accent); }
+
+.chip.other { border-style: dashed; }
+.otherbox { width: 100%; }
