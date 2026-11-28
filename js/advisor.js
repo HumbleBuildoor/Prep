@@ -1,6 +1,8 @@
 // Builds what is sent to Claude for the two advice features, and checks what comes back.
 // Nothing here talks to the network: reader.js does that with the owner's own API key.
 
+import { postureOf, washLitres, POSTURES } from './water.js';
+
 const line = parts => parts.filter(x => x !== null && x !== undefined && x !== '').join(' | ');
 
 /** One text line per item. The number after # is how Claude refers to the item in its answer. */
@@ -10,7 +12,7 @@ export function itemLines(items, kindOf) {
     it.unitSize ? `${it.unitSize} ${it.unit || ''}`.trim() + ' each' : '',
     it.area === 'food' && it.kcal !== null && it.kcal !== undefined ? `${it.kcal} kcal${it.protein ? `, ${it.protein} g protein` : ''} a pack` : '',
     it.area === 'food' ? (it.needsCooking ? 'needs cooking' : 'no cooking needed') : '',
-    it.area !== 'food' && it.cap !== null && it.cap !== undefined ? `gives ${it.cap} ${it.capUnit || ''}`.trim() + ' each' : '',
+    it.area !== 'food' && it.cap !== null && it.cap !== undefined ? `${it.area === 'water' && it.type === 'treatment' ? 'makes safe' : 'gives'} ${it.cap} ${it.capUnit || ''}`.trim() + ' each' : '',
     it.bestBefore ? 'best before ' + it.bestBefore : 'no date',
     'kept at ' + (it.location || 'unknown'),
   ])).join('\n');
@@ -21,7 +23,9 @@ export function context({ settings, locations, scenarioLines, note, today }) {
   return [
     `Today is ${today}.`,
     `Household: ${s.adults} adult(s), ${s.dogs || 0} dog(s), ${s.cats || 0} cat(s).`,
-    `Their own planning figures, per adult a day: ${s.rationLevel === 'standard' ? s.kcalStandard : s.kcalSurvival} kcal, ${s.proteinPerDay} g protein, ${s.waterPerPerson} L water.`,
+    `Their own planning figures, per adult a day, at the level they have chosen (${POSTURES.find(p => p[0] === postureOf(s))[1]}): ${postureOf(s) === 'bare' ? s.kcalSurvival : s.kcalStandard} kcal, ${s.proteinPerDay} g protein, ` +
+      `${s.drinkL ?? 3} L of drinking water (${s.drinkHotL ?? 4} L with the power off or on the move), ${washLitres(s)} L of water for washing and cooking. ` +
+      `Washing water can be any clean water. At home, ${s.reserveDays ?? 1} day(s) of sealed drinking water per person is held back and not counted.`,
     `For a carried bag they want single items no heavier than ${s.bagMaxG ?? 500} g and water bottles no larger than ${s.bagMaxL ?? 1.5} L.`,
     'Locations: ' + locations.join(', ') + '.',
     'Scenarios they plan for, with how long the stock they have logged lasts today:',

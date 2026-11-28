@@ -17,7 +17,7 @@ export function dates(items, s, today) {
     const entries = [];
     if (it.bestBefore) entries.push({ kind: it.area === 'medical' ? 'Expires' : 'Best before', date: it.bestBefore, check: false });
     const cd = checkDue(it);
-    if (cd) entries.push({ kind: 'Check', date: cd, check: true });
+    if (cd) entries.push({ kind: it.area === 'water' ? 'Refill' : 'Check', date: cd, check: true });
     if (!entries.length && it.area !== 'kit') b.undated++;
     for (const e of entries) {
       const d = daysLeft(e.date, today);

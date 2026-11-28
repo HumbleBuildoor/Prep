@@ -37,13 +37,17 @@ test('oil cap matches the closed form min(oil, food * cap / (1 - cap))', () => {
   assert.equal(C.applyCaps(100, [{ have: 50, cap: 0 }]).total, 150);      // cap 0 means no cap
 });
 
-test('water cut: only water is needed, pets included', () => {
+test('water cut: drinking sets the days, washing is counted beside it, one sealed day is held back', () => {
   const items = [{ area: 'water', qty: 10, cap: 1.5, location: 'Home' }];
   const r = C.evaluate(scn('water-cut'), items, S, TODAY);
   assert.deepEqual(r.needs.map(n => n.id), ['water']);
-  near(r.needs[0].lines[0].perDay, 2 * 4 + 3 * 0.3);
-  near(r.minDays, 15 / 8.9);
+  const [d, w] = r.needs[0].lines;
+  near(d.perDay, 2 * 3 + 3 * 0.3); near(w.perDay, 2 * 2);                // 3 L to drink, 2 L to wash at bare minimum, pets on top
+  near(r.minDays, (15 - 6) / 6.9);                                        // 6 L, a day for two people, is the reserve
+  assert.equal(w.days, 0); assert.equal(w.soft, true); assert.equal(r.needs[0].limit.key, 'water');
   assert.equal(r.status, 'bad');
+  near(r.needs[0].info.stock.reserve, 6);
+  near(C.evaluate(scn('water-cut'), items, { ...S, reserveDays: 0 }, TODAY).minDays, 15 / 6.9);
 });
 
 test('shops closed with power on: kitchen works, so all food counts and fuel is not needed', () => {
@@ -131,9 +135,12 @@ test('gaps: the largest shortfall of each line across all scenarios', () => {
   const items = [{ area: 'water', qty: 10, cap: 1.5, location: 'Home' }];
   const g = C.gaps(DEFAULT_SCENARIOS, items, S, TODAY);
   const w = g.find(x => x.key === 'water:water');
-  assert.deepEqual(w.scenarios.sort(), ['Everything off', 'Flood, stuck at home', 'Leave with the bags', 'Water cut at home'].sort());
-  near(w.short, 14 * 8.9 - 15);
+  // A power cut is a water cut too until the household says its taps keep running.
+  assert.deepEqual(w.scenarios.sort(), ['Everything off', 'Flood, stuck at home', 'Leave with the bags', 'Power cut at home', 'Water cut at home'].sort());
+  near(w.short, 14 * 8.9 - 9);                                            // 15 L less the 6 L reserve
   assert.equal(w.worst, 'Everything off');
+  const wash = g.find(x => x.key === 'water:wash');
+  near(wash.short, 14 * 4); assert.equal(wash.label, 'Washing water');
 });
 
 test('a scenario with nothing to stock is covered', () => {
@@ -251,8 +258,10 @@ test('situation: every question and option id is unique, and flags and summary f
   const ids = SIT.SECTIONS.flatMap(s => s.qs.map(q => q.id));
   assert.equal(new Set(ids).size, ids.length);
   for (const s of SIT.SECTIONS) for (const q of s.qs) assert.equal(new Set(q.opts.map(o => o[0])).size, q.opts.length, q.id);
-  const answers = { containers: 'none', treat: ['boil', 'filter'], rally: 'no' };
-  assert.deepEqual(SIT.progress(answers), { done: 3, total: ids.length });
+  const answers = { containersL: 0, treat: ['boil', 'filter'], rally: 'no' };
+  const followUps = SIT.SECTIONS.flatMap(s => s.qs).filter(q => q.when).length;        // only asked when another answer calls for them
+  assert.deepEqual(SIT.progress(answers), { done: 3, total: ids.length - followUps });
+  assert.equal(SIT.progress({ tapInCut: 'while' }).total, ids.length - followUps + 1);
   assert.deepEqual(SIT.flags(answers).map(f => f.section), ['Water', 'Your plan']);
   const text = SIT.summary({ answers, notes: { water: 'Pool on level 5' }, kinds: { 'Tank 300': 'vehicle' } }, ['Home', 'Tank 300']);
   assert.match(text, /Locations: Tank 300 is a vehicle\./);
@@ -285,7 +294,7 @@ test('gaps: drinking water leads, then whatever runs out soonest', () => {
   // Nothing is in the bags, so that is where water fails soonest.
   assert.equal(g[0].soonest, 0); assert.equal(g[0].soonestIn, 'Leave with the bags'); assert.equal(g[0].soonestTarget, 3);
   const w = C.gaps(DEFAULT_SCENARIOS.filter(x => x.id !== 'bags'), items, S, TODAY)[0];
-  near(w.soonest, 15 / 8.9); assert.equal(w.soonestIn, 'Water cut at home'); assert.equal(w.soonestTarget, 7);
+  near(w.soonest, 9 / 8.9); assert.equal(w.soonestIn, 'Power cut at home'); assert.equal(w.soonestTarget, 3);   // 4 L each with the power off
 });
 
 test('to do: dates are bucketed, checks only in their last days, put-off entries come back', () => {
@@ -312,13 +321,117 @@ test('to do: dates are bucketed, checks only in their last days, put-off entries
 });
 
 test('situation: "not sure" becomes a job, and key questions wait for an answer', () => {
-  const f = SIT.findOuts({ tapInCut: 'dk', cooking: ['cylinder'], containers: 'small' }, {});
+  const f = SIT.findOuts({ tapInCut: 'dk', cooking: ['cylinder'], containersL: 40 }, {});
   assert.deepEqual(f.map(x => x.key), ['find:tapInCut', 'find:treat']);
   assert.ok(f[0].unknown && /building management/.test(f[0].text));
   assert.ok(!f[1].unknown && f[1].text.startsWith('Answer: '));
   assert.equal(f[0].step, 2); assert.equal(f[1].step, 3);
-  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], containers: 'small' }, { treat: 'A still' }), []);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], containersL: 40 }, { treat: 'A still' }), []);
+  // a follow-up question is a job only while it applies
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'while', tapRun: 'dk', cooking: ['cylinder'], containersL: 0, treat: ['boil'] }, {}).map(x => x.key), ['find:tapRun']);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', tapRun: 'dk', cooking: ['cylinder'], containersL: 0, treat: ['boil'] }, {}), []);
   // "not sure" no longer doubles as a flag
   assert.deepEqual(SIT.flags({ tapInCut: 'dk' }), []);
-  assert.equal(SIT.flags({ containers: 'none' })[0].key, 'flag:containers:none');
+  assert.equal(SIT.flags({ containersL: 0 })[0].key, 'flag:containersL:0');
+  assert.match(SIT.summary({ answers: { containersL: 60 } }, []), /could you fill\? 60 L\./);
+});
+
+import * as WT from '../js/water.js';
+const WS = { adults: 2, drinkL: 3, drinkHotL: 4, washBareL: 2, washBasicL: 5, washComfortL: 12, reserveDays: 1, petWaterEach: 0.3 };
+const wi = (type, qty, cap) => ({ area: 'water', type, qty, cap });
+const WCUT = { place: 'home', tap: false, grid: true, shops: true }, PCUT = { place: 'home', tap: true, grid: false, shops: true };
+const wplan = (scn, items, a, target, s) => WT.plan(scn, items, s || WS, a || {}, { pets: 3, target: target || 7 });
+
+test('water: posture maps from the old food switch and sets washing litres and the ration', () => {
+  assert.equal(WT.postureOf({ rationLevel: 'standard' }), 'basic'); assert.equal(WT.postureOf({ rationLevel: 'survival' }), 'bare');
+  assert.equal(WT.postureOf({ rationLevel: 'survival', posture: 'comfort' }), 'comfort');
+  assert.equal(WT.washLitres(WS, 'basic'), 5); assert.equal(WT.washLitres({ ...WS, posture: 'comfort' }), 12); assert.equal(WT.washLitres({}), 2);
+  assert.equal(C.kcalFor({}, { ...S, posture: 'bare' }), 1600); assert.equal(C.kcalFor({}, { ...S, posture: 'basic' }), 2100); assert.equal(C.kcalFor({}, { ...S, posture: 'comfort' }), 2100);
+  assert.equal(WT.tapOf({ tap: true }), 'on'); assert.equal(WT.tapOf({ tap: false, tapState: 'unsafe' }), 'unsafe'); assert.equal(WT.tapOf({ tap: false }), 'off'); assert.equal(WT.tapOf({ tap: true, place: 'away' }), 'off');
+});
+
+test('water: washing never spends water that drinking needs before the scenario ends', () => {
+  const p = wplan(WCUT, [wi('drinking', 40, 1.5)]);                       // 60 L, 6 L held back, 54 L usable
+  near(p.D, 6.9); near(p.W, 4); near(p.stock.reserve, 6);
+  near(p.drinkDays, 7);                                                   // 48.3 L drunk over the 7 days
+  near(p.washDays, 5.7 / 4);                                              // the 5.7 L left over goes to washing
+  const more = wplan(WCUT, [wi('drinking', 40, 1.5), wi('washing', 2, 20)]);
+  assert.ok(more.washDays >= 7 && more.drinkDays >= 7);
+  const little = wplan(WCUT, [wi('drinking', 2, 1.5)]);                   // 3 L: all of it is the reserve
+  near(little.stock.reserve, 3); assert.equal(little.drinkDays, 0);
+});
+
+test('water: a power cut is a water cut unless the taps keep running', () => {
+  const items = [wi('drinking', 40, 1.5)];
+  const unknown = wplan(PCUT, items, {}, 3);
+  assert.ok(unknown.needed && unknown.tap.assumed && unknown.tap.byPower); near(unknown.D, 8.9);       // 4 L each with the power off
+  assert.equal(wplan(PCUT, items, { tapInCut: 'dk' }, 3).tap.assumed, true);
+  assert.equal(wplan(PCUT, items, { tapInCut: 'yes' }, 3).needed, false);
+  const no = wplan(PCUT, items, { tapInCut: 'no' }, 3);
+  assert.equal(no.tap.stopsAfter, 0); assert.equal(no.tap.assumed, false);
+  const day = wplan(PCUT, items, { tapInCut: 'while', tapRun: 'day' }, 3);
+  assert.equal(day.tap.stopsAfter, 1); near(day.drinkDays - no.drinkDays, 1);                            // one more day before the stock is touched
+  assert.equal(wplan(PCUT, items, { tapInCut: 'while', tapRun: 'dk' }, 3).tap.assumed, true);
+  // with mains power on, a working tap needs no stock at all
+  assert.equal(wplan({ place: 'home', tap: true, grid: true }, items, {}, 3).needed, false);
+});
+
+test('water: an unsafe tap washes; drinking comes from stock, then boiling or treatment', () => {
+  const UNSAFE = { place: 'home', tap: false, tapState: 'unsafe', grid: true, shops: true };
+  const boil = wplan(UNSAFE, []);
+  assert.equal(boil.drinkDays, Infinity); assert.equal(boil.washDays, Infinity); assert.equal(boil.washCounted, false);
+  const bottled = wplan(UNSAFE, [wi('drinking', 40, 1.5)], { boilOk: 'no' });
+  near(bottled.drinkDays, 54 / 6.9);
+  near(wplan(UNSAFE, [wi('drinking', 40, 1.5), wi('treatment', 1, 50)], { boilOk: 'no' }).drinkDays, 104 / 6.9);
+  // with the power off there is no hob to boil on, so only stock and treatment count
+  const dark = wplan({ ...UNSAFE, grid: false }, [wi('treatment', 2, 10)], { tapInCut: 'yes' });
+  near(dark.drinkDays, 20 / 8.9);
+});
+
+test('water: washing stock can be treated for drinking, and drinking takes it first', () => {
+  const OFF = { place: 'home', tap: false, grid: false, shops: false };
+  const p = wplan(OFF, [wi('washing', 5, 20), wi('treatment', 1, 30)], {}, 14);
+  near(p.drinkDays, 30 / 8.9); near(p.washDays, 70 / 4);
+  assert.equal(wplan(OFF, [wi('washing', 5, 20)], {}, 14).drinkDays, 0);          // untreated washing water is not drunk
+});
+
+test('water: a pool washes only, a river can be treated, and stairs cap what is carried', () => {
+  const items = [wi('drinking', 40, 1.5)];
+  const pool = wplan(WCUT, items, { source: ['pool'] });
+  assert.equal(pool.washDays, Infinity); near(pool.drinkDays, 54 / 6.9);          // pool water is never drunk
+  const river = wplan(WCUT, items, { source: ['river'] });
+  assert.equal(river.drinkDays, Infinity);                                        // boiled on the hob
+  near(wplan(WCUT, items, { source: ['river'], boilOk: 'no' }).drinkDays, 54 / 6.9);
+  const stairs = wplan(PCUT, items, { tapInCut: 'no', source: ['pool'], floor: 'high' }, 3);
+  assert.ok(stairs.washDays < 10);                                                // nothing carried up: washing falls back on spare bottles
+  assert.equal(wplan(PCUT, items, { tapInCut: 'no', source: ['pool'], floor: 'high', carryL: 20 }, 3).washDays, Infinity);
+  assert.equal(wplan(PCUT, items, { tapInCut: 'no', source: ['pool'], floor: 'ground' }, 3).washDays, Infinity);
+});
+
+test('water: away from home there is no reserve and no washing; a heater and the first fill are reported', () => {
+  const away = WT.plan({ place: 'away' }, [wi('drinking', 4, 1.5)], WS, {}, { pets: 3, target: 3 });
+  near(away.drinkDays, 6 / 8.9); assert.equal(away.stock.reserve, 0); assert.equal(away.W, 0); assert.equal(away.washCounted, false);
+  const heater = wplan(WCUT, [], { heaterL: 30 });
+  near(heater.drinkDays, 30 / 6.9);
+  const fill = wplan(WCUT, [], { containersL: 60, tubL: 150, warning: 'usually' }).fill;
+  assert.equal(fill.way, 'warning'); near(fill.drinkDays, 60 / 6.9); near(fill.washDays, 150 / 4);
+  assert.equal(wplan(WCUT, [], { containersL: 60, warning: 'never' }).fill.way, 'no');
+  assert.equal(wplan(PCUT, [], { containersL: 60, tapInCut: 'while', tapRun: 'hours' }, 3).fill.way, 'running');
+  assert.equal(wplan(PCUT, [], { containersL: 60, tapInCut: 'no' }, 3).fill.way, 'no');
+  assert.equal(wplan(PCUT, [], { containersL: 60 }, 3).fill.way, 'maybe');
+  assert.equal(wplan(WCUT, [], {}).fill, null);
+});
+
+test('water in a scenario: the answers reach the calculation, and each level changes the washing figure', () => {
+  const items = [{ area: 'water', type: 'drinking', qty: 40, cap: 1.5, location: 'Home' }];
+  const withAnswers = a => ({ ...S, situation: { answers: a } });
+  assert.ok(C.evaluate(scn('power-cut'), items, S, TODAY).needs.some(n => n.id === 'water'));
+  assert.ok(!C.evaluate(scn('power-cut'), items, withAnswers({ tapInCut: 'yes' }), TODAY).needs.some(n => n.id === 'water'));
+  const bare = C.evaluate(scn('water-cut'), items, S, TODAY).needs[0], comfort = C.evaluate(scn('water-cut'), items, { ...S, posture: 'comfort' }, TODAY).needs[0];
+  near(bare.lines[1].perDay, 4); near(comfort.lines[1].perDay, 24);
+  near(bare.days, 7); near(comfort.days, 7);                                      // drinking is the same at every level
+  assert.ok(comfort.lines[1].days < bare.lines[1].days);
+  const t = C.totals([{ area: 'water', type: 'drinking', qty: 2, cap: 5 }, { area: 'water', type: 'filled', qty: 1, cap: 20 }, { area: 'water', type: 'washing', qty: 3, cap: 10 }, { area: 'water', type: 'treatment', qty: 1, cap: 100 }]);
+  assert.equal(t.water, 30); assert.equal(t.wash, 30); assert.equal(t.treat, 100);
+  assert.deepEqual(C.missing({ area: 'water', type: 'treatment', name: 'Tablets' }), ['litres it treats']);
 });

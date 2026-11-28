@@ -3,7 +3,8 @@
 
 export const AREAS = [
   { id: 'water', name: 'Water', short: 'Water', capLabel: 'Litres in one unit', capUnit: 'L',
-    types: [{ id: 'drinking', label: 'Drinking water' }] },
+    types: [{ id: 'drinking', label: 'Sealed drinking water' }, { id: 'filled', label: 'Drinking water you filled' },
+      { id: 'washing', label: 'Washing water' }, { id: 'treatment', label: 'Filter, tablets or drops' }] },
   { id: 'food', name: 'Food', short: 'Food', types: null },
   { id: 'fuel', name: 'Cooking fuel', short: 'Fuel', capLabel: 'Burn time of one unit (minutes)', capUnit: 'min',
     types: [{ id: 'butane', label: 'Butane can' }, { id: 'gas', label: 'Gas cylinder' }, { id: 'other', label: 'Other fuel' }] },
@@ -41,6 +42,8 @@ export const TEMPLATES = {
     { label: '1.5 L bottle', set: { name: 'Water bottle 1.5 L', type: 'drinking', unitSize: 1500, unit: 'ml', cap: 1.5 } },
     { label: '5 L', set: { name: 'Water 5 L', type: 'drinking', unitSize: 5000, unit: 'ml', cap: 5 } },
     { label: '10 L', set: { name: 'Water 10 L', type: 'drinking', unitSize: 10000, unit: 'ml', cap: 10 } },
+    { label: 'Filled container', set: { name: 'Filled water container', type: 'filled', checkEveryMonths: 6, basis: 'Water you fill yourself is replaced every 6 months, so a reminder is set.' } },
+    { label: 'Bucket for washing', set: { name: 'Bucket of washing water', type: 'washing' } },
   ],
   fuel: [
     { label: 'Butane can 250 g', set: { name: 'Butane can 250 g', type: 'butane', unitSize: 250, unit: 'g', cap: 70 } },
@@ -70,7 +73,9 @@ export const MODELS = [
 export const DEFAULT_SETTINGS = {
   adults: 2, dogs: 0, cats: 0,
   rationLevel: 'survival', kcalSurvival: 1600, kcalStandard: 2100, kcalActive: 2700, proteinPerDay: 60, proteinLimits: true,
-  waterPerPerson: 4, petWaterEach: 0.3,
+  // Water, in litres per person a day. Washing follows the posture: bare minimum, basic or comfortable.
+  drinkL: 3, drinkHotL: 4, washBareL: 2, washBasicL: 5, washComfortL: 12, reserveDays: 1, petWaterEach: 0.3,
+  waterPerPerson: 4,          // the single figure used before water was split into drinking and washing; kept for older versions
   flameMinPerDay: 30, powerWhPerDay: 50,
   oilCap: 0.1, oilCategory: 'Oil & Fat', sweetCap: 0, sweetCategory: 'Honey & Sweeteners',
   eatFirstDays: 90, soonDays: 180, bagMaxG: 500, bagMaxL: 1.5, bagMinKcal100: 300, areas: ACTIVE.slice(), countExpired: true,
@@ -81,7 +86,8 @@ export const DEFAULT_SETTINGS = {
   apiModel: 'claude-sonnet-5-5',
 };
 
-// tap, grid and shops say what still works. "household" ration follows the Survival/Standard switch.
+// tap, grid and shops say what still works. tapState: 'unsafe' marks a tap that runs but must not be drunk untreated.
+// "household" ration follows the posture switch on Ready.
 export const DEFAULT_SCENARIOS = [
   { id: 'water-cut', name: 'Water cut at home', days: 7, place: 'home', tap: false, grid: true, shops: true, ration: 'household' },
   { id: 'power-cut', name: 'Power cut at home', days: 3, place: 'home', tap: true, grid: false, shops: true, ration: 'household' },
@@ -92,9 +98,21 @@ export const DEFAULT_SCENARIOS = [
 ];
 
 export const SOURCES = [
-  { what: 'Water, 4 litres per person a day',
-    why: 'US emergency guidance asks for at least one gallon (3.8 L) per person per day for drinking and sanitation, and more in hot climates.',
-    url: 'https://www.ready.gov/water', from: 'Ready.gov' },
+  { what: 'Drinking water, 3 litres per person a day, 4 in heat or on the move',
+    why: 'Sphere gives 2.5 to 3 L a day for drinking and food as a survival need, more in a hot climate. A WHO technical note gives 3 to 4 L. The app uses 4 L when the power is off or you are on the move.',
+    url: 'https://sphereprototype.conted.ox.ac.uk/standards/watersupply/accessAndWaterQuantity.html', from: 'Sphere standards' },
+  { what: 'Washing and cooking water: 2, 5 or 12 litres per person a day',
+    why: 'Sphere gives 2 to 6 L for basic hygiene and 3 to 6 L for basic cooking. Bare minimum is the low end of hygiene alone, Basic the low ends of both, Comfortable the high ends of both. With drinking that makes 5, 8 and 15 L. Sphere’s minimum total is 7.5 L, so Bare minimum is for a few days only.',
+    url: 'https://sphereprototype.conted.ox.ac.uk/standards/watersupply/accessAndWaterQuantity.html', from: 'Sphere standards' },
+  { what: 'Water you fill yourself, replaced every 6 months',
+    why: 'Public-health advice for tap water stored in clean food-grade containers. Sealed bottles keep to their printed date. Bottled water is used before treated water.',
+    url: 'https://www.cdc.gov/healthywater/emergency/creating-storing-emergency-water-supply.html', from: 'CDC' },
+  { what: 'One sealed day of drinking water held back',
+    why: 'A working rule, not a published figure: at home the plan never uses the last sealed day per person, so there is water to leave with. Set it to 0 to count everything.',
+    url: '', from: 'Working rule. Change it under Rations and rules.' },
+  { what: 'Pool water is for washing only',
+    why: 'Health departments list swimming pools among water not to drink. Some guidance allows it after treatment; the app takes the cautious line. Flood water is never used, because sewage and chemicals cannot be boiled out.',
+    url: 'https://doh.wa.gov/sites/default/files/legacy/Documents/Pubs/331-115-PrinterFriendly.pdf', from: 'Washington State Department of Health' },
   { what: 'Standard ration, 2,100 kcal per adult',
     why: 'The planning figure relief agencies use for emergency rations. Survival (1,600) is a deliberate short-term deficit ration.',
     url: 'https://www.unhcr.org/uk/sites/uk/files/legacy-pdf/3b9cbef7a.pdf', from: 'UNHCR food and nutrition guidelines' },

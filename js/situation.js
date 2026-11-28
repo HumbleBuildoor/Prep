@@ -1,5 +1,7 @@
 // The situation questionnaire: what a survival consultant would ask about the household, its places and its means.
 // Answers are picked from buttons. Nothing asks for an address. An option's third entry is what that answer flags.
+// A question with num is answered with one number in that unit (zero: what an answer of 0 flags).
+// A question with when is only asked while that test of the other answers holds.
 
 const DK = ['dk', 'Not sure'];
 export const KINDS = [['home', 'Home'], ['bag', 'Grab bag'], ['vehicle', 'Vehicle'], ['safehouse', 'Second place or safehouse'], ['storage', 'Storage'], ['other', 'Other']];
@@ -17,6 +19,8 @@ export const SECTIONS = [
     { id: 'homeType', q: 'What kind of home?', opts: [['highrise', 'Condo or flat'], ['landed', 'Landed house'], ['other', 'Other']] },
     { id: 'floor', q: 'Which floor?', opts: [['ground', 'Ground'], ['low', '1 to 5'], ['mid', '6 to 15'], ['high', '16 or above', 'On a high floor, a power cut means stairs for every trip and for carrying water.']] },
     { id: 'tapInCut', q: 'In a power cut, does water still come out of the taps?', opts: [['yes', 'Yes'], ['while', 'For a while, then stops'], ['no', 'No', 'No tap water in a power cut, so every power cut is also a water cut for you.'], [DK[0], DK[1]]], find: 'Ask building management whether the taps run in a power cut, and for how long.' },
+    { id: 'tapRun', q: 'How long do the taps keep running after the power goes?', opts: [['once', 'They stop at once'], ['hours', 'A few hours'], ['day', 'About a day'], ['longer', 'Longer'], [DK[0], DK[1]]],
+      when: a => a.tapInCut === 'while', find: 'Ask building management how long the taps run once the power is off.' },
     { id: 'cooking', q: 'How do you normally cook?', opts: [['mains', 'Piped gas'], ['cylinder', 'Gas cylinder'], ['electric', 'Electric or induction'], ['portable', 'Portable stove only']], multi: true },
     { id: 'backup', q: 'What backup power do you have?', opts: [['none', 'None', 'No backup power at all. A power bank per phone is the first step.'], ['banks', 'Power banks'], ['station', 'Power station'], ['generator', 'Generator'], ['solar', 'Solar panel']], multi: true },
     { id: 'heat', q: 'Without power, can the home stay bearable?', opts: [['yes', 'Yes, windows and airflow'], ['hot', 'It gets very hot', 'The home gets very hot without power. Battery fans and extra drinking water belong on the list.'], [DK[0], DK[1]]], find: 'Switch the air-con and fans off for an afternoon to see how hot the home gets without power.' },
@@ -26,10 +30,15 @@ export const SECTIONS = [
   ] },
   { id: 'water', title: 'Water', intro: 'Where water comes from when the tap does not.', qs: [
     { id: 'warning', q: 'Do you get warning before a water cut?', opts: [['usually', 'Usually'], ['sometimes', 'Sometimes'], ['never', 'Never']] },
-    { id: 'containers', q: 'Empty containers you could fill, in total?', opts: [['none', 'None', 'No containers to fill. They are cheap, and filling them when a cut is announced is the best single step.'], ['small', 'Under 20 L'], ['medium', '20 to 60 L'], ['large', 'Over 60 L']] },
-    { id: 'tub', q: 'A bathtub or large tank you could fill?', opts: [['yes', 'Yes'], ['no', 'No']] },
+    { id: 'containersL', q: 'How many litres of empty containers could you fill?', num: 'L', opts: [[DK[0], DK[1]]],
+      zero: 'No containers to fill. They are cheap, and filling them when a cut is announced is the best single step.', find: 'Add up the litres of the empty containers you could fill.' },
+    { id: 'tubL', q: 'A bathtub or large tub you could fill: about how many litres?', num: 'L', hint: 'Enter 0 if you have none.', opts: [[DK[0], DK[1]]], find: 'Find out how many litres your bath or tub holds.' },
+    { id: 'heaterL', q: 'A storage water heater: how many litres does it hold?', num: 'L', hint: 'Enter 0 if yours heats water as it flows. Turn a storage heater off before draining it.', opts: [[DK[0], DK[1]]], find: 'Read the litres on your water heater.' },
     { id: 'treat', q: 'How could you make water safe to drink?', opts: [['boil', 'Boil it'], ['filter', 'A filter'], ['tablets', 'Tablets or drops'], ['none', 'No way yet', 'No way to treat water. Stored bottles are then your only drinking water.']], multi: true },
+    { id: 'boilOk', q: 'Would you drink tap water after boiling it?', opts: [['yes', 'Yes'], ['no', 'Bottled only']] },
     { id: 'source', q: 'Any water nearby if the taps stay off?', opts: [['pool', 'A pool'], ['river', 'River or lake'], ['rain', 'Rain I could collect'], ['none', 'Nothing', 'No other water source nearby, so long cuts depend entirely on what you store.'], [DK[0], DK[1]]], multi: true, find: 'Look for water near home you could use if the taps stay off: a pool, a river, somewhere to catch rain.' },
+    { id: 'carryL', q: 'With the lifts out, how many litres could you carry up in a day?', num: 'L', opts: [[DK[0], DK[1]]],
+      when: a => a.homeType !== 'landed' && a.floor !== 'ground' && [].concat(a.source || []).some(x => x === 'pool' || x === 'river'), find: 'Carry a full container up the stairs once to see how many litres a day is realistic.' },
   ] },
   { id: 'toilet', title: 'Toilet and hygiene', intro: 'Flushing needs far more water than drinking.', qs: [
     { id: 'toiletPlan', q: 'With no tap water, what is the toilet plan?', opts: [['flush', 'Flush with a bucket'], ['bags', 'Lined bucket and bags'], ['none', 'No plan yet', 'No toilet plan for a water cut. Strong bags and a bucket solve it for very little.']] },
@@ -94,27 +103,34 @@ export const SECTIONS = [
 ];
 
 const ALL = SECTIONS.flatMap(s => s.qs);
-const picked = (a, q) => { const v = a ? a[q.id] : undefined; return Array.isArray(v) ? v : v ? [v] : []; };
+const picked = (a, q) => { const v = a ? a[q.id] : undefined; return Array.isArray(v) ? v : v || v === 0 ? [v] : []; };
+/** Whether a question applies, given the other answers. */
+export const asked = (q, answers) => !q.when || !!q.when(answers || {});
 
 export function progress(answers, other) {
-  const done = ALL.filter(q => picked(answers, q).length || (other && other[q.id])).length;
-  return { done, total: ALL.length };
+  const qs = ALL.filter(q => asked(q, answers));
+  return { done: qs.filter(q => picked(answers, q).length || (other && other[q.id])).length, total: qs.length };
 }
 
 /** What the answers flag, most basic needs first (the order of the sections). step is the questionnaire screen to open. */
 export function flags(answers) {
   const out = [];
-  SECTIONS.forEach((s, i) => { for (const q of s.qs) for (const o of q.opts) if (o[2] && picked(answers, q).includes(o[0])) out.push({ key: 'flag:' + q.id + ':' + o[0], step: i + 1, section: s.title, text: o[2] }); });
+  SECTIONS.forEach((s, i) => { for (const q of s.qs) {
+    if (!asked(q, answers)) continue;
+    for (const o of q.opts) if (o[2] && picked(answers, q).includes(o[0])) out.push({ key: 'flag:' + q.id + ':' + o[0], step: i + 1, section: s.title, text: o[2] });
+    if (q.zero && answers && answers[q.id] === 0) out.push({ key: 'flag:' + q.id + ':0', step: i + 1, section: s.title, text: q.zero });
+  } });
   return out;
 }
 
 // The answers that change the result most. Until they are given, answering them is a job in itself.
-export const KEY = ['tapInCut', 'cooking', 'containers', 'treat'];
+export const KEY = ['tapInCut', 'cooking', 'containersL', 'treat'];
 
 /** Jobs the questionnaire creates: every "not sure" is something to find out, and each key question still waits for an answer. */
 export function findOuts(answers, other) {
   const out = [];
   SECTIONS.forEach((s, i) => { for (const q of s.qs) {
+    if (!asked(q, answers)) continue;
     const p = picked(answers, q);
     if (p.includes(DK[0])) out.push({ key: 'find:' + q.id, qid: q.id, step: i + 1, section: s.title, text: q.find || 'Find out: ' + q.q, unknown: true });
     else if (KEY.includes(q.id) && !p.length && !(other && other[q.id])) out.push({ key: 'find:' + q.id, qid: q.id, step: i + 1, section: s.title, text: 'Answer: ' + q.q, unknown: false });
@@ -128,7 +144,7 @@ export function summary(sit, locations) {
   const named = (locations || []).filter(l => kinds[l]).map(l => `${l} is a ${(KINDS.find(k => k[0] === kinds[l]) || ['', kinds[l]])[1].toLowerCase()}`);
   if (named.length) lines.push('Locations: ' + named.join('; ') + '.');
   for (const s of SECTIONS) {
-    const parts = s.qs.filter(q => picked(a, q).length || other[q.id]).map(q => `${q.q} ${picked(a, q).map(v => (q.opts.find(o => o[0] === v) || [v, v])[1]).concat(other[q.id] ? ['in their own words: ' + other[q.id]] : []).join(', ')}.`);
+    const parts = s.qs.filter(q => asked(q, a) && (picked(a, q).length || other[q.id])).map(q => `${q.q} ${picked(a, q).map(v => (typeof v === 'number' ? `${v} ${q.num || ''}`.trim() : (q.opts.find(o => o[0] === v) || [v, v])[1])).concat(other[q.id] ? ['in their own words: ' + other[q.id]] : []).join(', ')}.`);
     if (notes[s.id]) parts.push('Note: ' + notes[s.id]);
     if (parts.length) lines.push(s.title + ' — ' + parts.join(' '));
   }

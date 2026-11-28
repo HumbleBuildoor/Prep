@@ -1,6 +1,8 @@
 // Pure calculations: dates, status, and the scenario readiness engine.
 // No DOM and no storage in here, so this file can be unit-tested in Node.
 
+import * as W from './water.js';
+
 export const DAY = 864e5;
 
 export function num(v) {
@@ -70,7 +72,7 @@ export function missing(item) {
       if (num(item.kcal) === null) m.push('kcal');
       else if (!item.source) m.push('nutrition source');
       break;
-    case 'water': if (cap === null) m.push('litres'); break;
+    case 'water': if (cap === null) m.push(item.type === 'treatment' ? 'litres it treats' : 'litres'); break;
     case 'fuel': if (cap === null) m.push('burn time'); break;
     case 'power': if (cap === null) m.push('watt-hours'); break;
     case 'hygiene': if ((item.type === 'toiletpaper' || item.type === 'soap') && cap === null) m.push('how long it lasts'); break;
@@ -101,9 +103,10 @@ export function applyCaps(base, groups) {
   return { total, used };
 }
 
+/** kcal per adult a day. Bare minimum eats the survival ration; Basic and Comfortable eat the standard one. */
 export function kcalFor(scn, s) {
   if (scn.ration === 'active') return num(s.kcalActive) || 0;
-  return (s.rationLevel === 'standard' ? num(s.kcalStandard) : num(s.kcalSurvival)) || 0;
+  return (W.postureOf(s) === 'bare' ? num(s.kcalSurvival) : num(s.kcalStandard)) || 0;
 }
 
 function usable(item, scn, s, today) {
@@ -126,14 +129,16 @@ function line(key, label, have, unit, perDay, extra) {
 
 function need(id, name, lines, target, extra) {
   // Lines marked essential:false are shown for information but never limit the need.
+  // Lines marked soft (washing water) do not set the days either, but a shortfall is still a gap to close.
   let limit = null;
-  for (const l of lines) if (l.essential !== false && (!limit || l.days < limit.days)) limit = l;
+  for (const l of lines) if (l.essential !== false && !l.soft && (!limit || l.days < limit.days)) limit = l;
   return Object.assign({ id, name, lines, days: limit ? limit.days : Infinity, limit, target }, extra || {});
 }
 
 /**
  * Works out how many days one scenario is covered for, need by need.
- * scn: { days, place:'home'|'away', tap, grid, shops, ration:'household'|'active', locations?, petsAlong? }
+ * scn: { days, place:'home'|'away', tap, tapState?:'unsafe', grid, shops, ration:'household'|'active', locations?, petsAlong? }
+ * s.situation.answers (the questionnaire) feeds the water rules: see water.js.
  * labelOf(area, type) is optional and only used for display names of hygiene types.
  */
 export function evaluate(scn, items, s, today, labelOf) {
@@ -153,10 +158,14 @@ export function evaluate(scn, items, s, today, labelOf) {
   const flame = num(s.flameMinPerDay) || 0;
   const fuelDays = flame > 0 ? fuelHave / flame : Infinity;
 
-  if (!scn.tap || away) {
-    const perDay = adults * (num(s.waterPerPerson) || 0) + (petsIn ? pets * (num(s.petWaterEach) || 0) : 0);
-    const w = by('water');
-    needs.push(need('water', 'Water', [line('water', 'Drinking water', stock(w), 'L', perDay)], target, { logged: w.length > 0 }));
+  // Water: drinking sets the days. Washing is counted beside it and never spends water the drinking needs.
+  const w = by('water');
+  const wp = W.plan(scn, w, s, (s.situation && s.situation.answers) || {}, { pets: petsIn ? pets : 0, target });
+  if (wp.needed) {
+    const wl = (key, label, days, perDay, extra) => Object.assign({ key, label, have: Number.isFinite(days) ? days * perDay : Infinity, unit: 'L', perDay, days }, extra || {});
+    const lines = [wl('water', 'Drinking water', wp.drinkDays, wp.D)];
+    if (wp.washCounted) lines.push(wl('wash', 'Washing water', wp.washDays, wp.W, { soft: true }));
+    needs.push(need('water', 'Water', lines, target, { logged: w.length > 0 || wp.drinkDays > 0, info: wp }));
   }
 
   if (needFood) {
@@ -270,7 +279,7 @@ export function gaps(scenarios, items, s, today, labelOf) {
 
 /** Plain totals of what is in stock, ignoring scenarios. */
 export function totals(items) {
-  const t = { water: 0, kcal: 0, protein: 0, fuel: 0, power: 0, rows: 0, drafts: 0, estimates: 0, uncounted: 0, byArea: {} };
+  const t = { water: 0, wash: 0, treat: 0, kcal: 0, protein: 0, fuel: 0, power: 0, rows: 0, drafts: 0, estimates: 0, uncounted: 0, byArea: {} };
   for (const it of items) {
     if (it.deleted) continue;
     const q = num(it.qty) || 0, cap = num(it.cap) || 0;
@@ -282,7 +291,7 @@ export function totals(items) {
       t.kcal += q * (num(it.kcal) || 0);
       t.protein += q * (num(it.protein) || 0);
       if (num(it.kcal) !== null && !['LABEL', 'ONLINE', 'GENERIC'].includes(it.source)) t.estimates++;
-    } else if (it.area === 'water') t.water += q * cap;
+    } else if (it.area === 'water') t[it.type === 'washing' ? 'wash' : it.type === 'treatment' ? 'treat' : 'water'] += q * cap;
     else if (it.area === 'fuel') t.fuel += q * cap;
     else if (it.area === 'power') t.power += q * cap;
   }

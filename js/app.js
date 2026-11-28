@@ -8,8 +8,9 @@ import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 import * as SIT from './situation.js';
 import * as TD from './todo.js';
+import * as WT from './water.js';
 
-const APP_VERSION = '1.16.0';
+const APP_VERSION = '1.17.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -340,7 +341,7 @@ function capText(it) {
   const c = C.num(it.cap);
   switch (it.area) {
     case 'food': return C.num(it.kcal) !== null ? `${n0(it.kcal)} kcal a pack` : '';
-    case 'water': return c !== null ? `${n1(c)} L each` : '';
+    case 'water': return c === null ? '' : it.type === 'treatment' ? `treats ${n0(c)} L each` : `${n1(c)} L each`;
     case 'fuel': return c !== null ? `${n0(c)} min each` : '';
     case 'power': return c !== null ? `${n0(c)} Wh each` : '';
     case 'medical': return c !== null ? `${n0(c)} doses${C.num(it.perDay) ? `, ${n1(it.perDay)} a day` : ''}` : '';
@@ -390,10 +391,12 @@ function scenarioView(scn, r) {
   v.days = lim.days; v.ratio = r.target > 0 ? Math.min(1, lim.days / r.target) : 1;
   if (lim.days < r.target) {
     v.cls = v.ratio >= 0.5 ? 'short' : 'bad';
-    const many = lim.lines.filter(l => l.essential !== false).length > 1;
+    const many = lim.lines.filter(l => l.essential !== false && !l.soft).length > 1;
     v.limit = lim.name + (many && lim.limit ? ' (' + lim.limit.label.toLowerCase() + ')' : '');
   } else if (unlogged.length) { v.cls = 'short'; v.limit = 'Covered so far'; }
   else { v.limit = 'Covered'; v.covered = true; }
+  const soft = logged.flatMap(n => n.lines.filter(l => l.soft && l.days < r.target));
+  if (v.covered && soft.length) { v.covered = false; v.cls = 'short'; v.limit = soft[0].label + ' is short'; }
   if (unlogged.length) v.limit += ` · ${unlogged.length} not logged`;
   return v;
 }
@@ -431,10 +434,11 @@ function viewReady() {
   if (nx.length && items.length) {
     h += `<div class="card nextcard"><div class="askrow"><h2>Next</h2>${count > nx.length ? `<a class="state" href="#todo">All ${count} to do</a>` : ''}</div><ul class="rows">${nx.map(x => todoRow(x)).join('')}</ul></div>`;
   }
-  h += `    <div class="ration"><div class="seg" role="group" aria-label="Ration level">
-      <button data-act="ration" data-v="survival" aria-pressed="${s.rationLevel !== 'standard'}">Survival ${n0(s.kcalSurvival)}</button>
-      <button data-act="ration" data-v="standard" aria-pressed="${s.rationLevel === 'standard'}">Standard ${n0(s.kcalStandard)}</button></div>
-      ${items.some(i => i.area === 'food') ? '<button class="btn" data-act="meals">Plan meals</button>' : ''}</div>`;
+  const pos = WT.postureOf(s);
+  h += `<div class="posture"><div class="seg" role="group" aria-label="How far you would cut back">${WT.POSTURES.map(p =>
+      `<button data-act="posture" data-v="${p[0]}" aria-pressed="${pos === p[0]}">${p[1]}</button>`).join('')}</div>
+      <div class="posture-line"><span class="note">A person a day: ${n0(C.kcalFor({}, s))} kcal, ${n1(s.drinkL ?? 3)} L to drink, ${n1(WT.washLitres(s))} L to wash and cook.</span>
+      ${items.some(i => i.area === 'food') ? '<button class="btn small" data-act="meals">Plan meals</button>' : ''}</div></div>`;
   if (!items.length) {
     h += `<div class="card"><h2>Start here</h2><p class="note">Add your first item with a photo of the pack, or bring in a backup file.</p>
       <div class="actions start"><button class="btn primary" data-act="add">Add item</button><a class="btn" href="#more">Import a backup</a></div></div>`;
@@ -451,7 +455,7 @@ function viewReady() {
   }
   const jump = (label, n, f) => `<a href="#supplies" data-jump="${f}"><span>${label}</span><b>${n}</b></a>`;
   h += `<details class="card fold2" data-open="stock"${OPEN.has('stock') ? ' open' : ''}><summary><h2>In stock</h2><span class="state">${plural(t.rows, 'item')}</span></summary><div class="fold-body"><div class="tiles">
-      <div class="tile"><div class="n">${n1(t.water)} L</div><div class="l">water</div></div>
+      <div class="tile"><div class="n">${n1(t.water)} L</div><div class="l">drinking water${t.wash ? `, ${n1(t.wash)} L for washing` : ''}${t.treat ? `, ${n0(t.treat)} L can be treated` : ''}</div></div>
       <div class="tile"><div class="n">${n0(t.kcal)}</div><div class="l">kcal of food, ${n0(t.protein)} g protein</div></div>
       <div class="tile"><div class="n">${n0(t.fuel)} min</div><div class="l">cooking flame</div></div>
       <div class="tile"><div class="n">${n0(t.power)} Wh</div><div class="l">stored power</div></div></div>
@@ -506,6 +510,9 @@ function todoModel() {
   const all = [
     ...C.gaps(S.scenarios, items, s, t, typeLabel).map(g => ({ kind: 'gap', key: 'gap:' + g.key, g })),
     ...SIT.findOuts(sit.answers, sit.other).map(f => ({ kind: 'find', key: f.key, f })),
+    // A filter or tablets named in the answers only count once they are logged with the litres they treat.
+    ...([].concat((sit.answers || {}).treat || []).some(x => x === 'filter' || x === 'tablets') && !items.some(i => i.area === 'water' && i.type === 'treatment')
+      ? [{ kind: 'find', key: 'find:logTreatment', f: { text: 'Log your water filter or tablets under Water, with the litres they treat, so they count.', section: 'Water', item: { area: 'water', type: 'treatment' } } }] : []),
     ...SIT.flags(sit.answers).map(f => ({ kind: 'flag', key: f.key, f })),
   ];
   const d = TD.dates(items, s, t), on = all.filter(x => TD.isOn(off, x.key, t)), of = k => on.filter(x => x.kind === k);
@@ -530,15 +537,17 @@ function todoRow(x, back) {
     const g = x.g;
     icon = `<span class="thumb sm a-${esc(g.need)}">${areaIcon(g.need)}</span>`;
     cls = g.soonestTarget > 0 && g.soonest / g.soonestTarget >= 0.5 ? 'short' : 'bad';
-    nm = `${g.key === 'food:kcal' ? 'Food' : ['food', 'pets'].includes(g.need) ? g.label : g.needName}: add ${gapAmount(g)}`;
-    mt = `${g.soonestIn} lasts ${fmtDays(g.soonest)} of ${plural(g.soonestTarget, 'day')}` + (g.scenarios.length > 1 ? ` · short in ${g.scenarios.length} scenarios` : '');
+    // The amount stays on one line: "124.6 L" must not break between the number and its unit.
+    const amt = gapAmount(g), cut = amt.indexOf(',') < 0 ? amt.length : amt.indexOf(',');
+    nm = `${esc(g.key === 'food:kcal' ? 'Food' : ['food', 'pets', 'water'].includes(g.need) ? g.label : g.needName)}: add <span class="nb">${esc(amt.slice(0, cut))}</span>${esc(amt.slice(cut))}`;
+    mt = (g.key === 'water:wash' ? 'Fill clean containers from the tap' : `${g.soonestIn} lasts ${fmtDays(g.soonest)} of ${plural(g.soonestTarget, 'day')}`) + (g.scenarios.length > 1 ? ` · short in ${g.scenarios.length} scenarios` : '');
   } else {
     icon = `<span class="thumb sm t-${x.kind}">${svg(x.kind === 'find' ? HELP : FLAG)}</span>`;
-    cls = 'plain'; nm = x.f.text; mt = x.f.section;
+    cls = 'plain'; nm = esc(x.f.text); mt = x.f.section;
   }
   if (back) mt = (x.until === 'hide' ? 'Hidden' : 'Put off until ' + fdate(x.until)) + ' · ' + mt;
   const k = `data-k="${esc(x.key)}"`;
-  return `<li class="row todo s-${cls}"><button class="row-main" data-act="todo-go" ${k}>${icon}<span class="row-text"><span class="nm">${esc(nm)}</span><span class="mt">${esc(mt)}</span></span></button>
+  return `<li class="row todo s-${cls}"><button class="row-main" data-act="todo-go" ${k}>${icon}<span class="row-text"><span class="nm">${nm}</span><span class="mt">${esc(mt)}</span></span></button>
     ${back ? `<button class="qty" data-act="todo-back" ${k}><b>↩</b><small>bring back</small></button>` : `<button class="qty" data-act="todo-later" ${k} aria-label="Put off or hide"><b>···</b><small>later</small></button>`}</li>`;
 }
 
@@ -587,9 +596,24 @@ function viewLog() {
 }
 
 // ---------- view: More ----------
+// The working figures: the built-in default of each, and the published floor where there is one.
+const FIGS = {
+  's-ksurv': { def: 1600 }, 's-kstd': { def: 2100 }, 's-kact': { def: 2700 }, 's-prot': { def: 60 },
+  's-drink': { def: 3, floor: 2.5, why: 'Under 2.5 L. Sphere gives 2.5 to 3 L as the least for drinking and food.' }, 's-drinkhot': { def: 4 },
+  's-wbare': { def: 2, floor: 2, why: 'Under 2 L. Sphere gives 2 L as the least for basic hygiene.' }, 's-wbasic': { def: 5 }, 's-wcomf': { def: 12 },
+  's-petw': { def: 0.3 }, 's-reserve': { def: 1 }, 's-flame': { def: 30 }, 's-power': { def: 50 },
+  's-oil': { def: 10 }, 's-sweet': { def: 0 }, 's-eat': { def: 90 }, 's-soon': { def: 180 }, 's-bagg': { def: 500 }, 's-bagl': { def: 1.5 }, 's-bagk': { def: 300 },
+};
+function figNote(id, value) {
+  const f = FIGS[id], v = C.num(value);
+  if (!f) return '';
+  const low = f.floor !== undefined && v !== null && v < f.floor ? `<span class="d-expired">${esc(f.why)}</span> ` : '';
+  return low + (v === f.def ? 'Default' : `Yours. The default is ${n1(f.def)}. <button class="link" type="button" data-act="fig-reset" data-id="${id}">Reset</button>`);
+}
+
 function viewMore() {
   const s = S.settings;
-  const N = (id, label, value, step) => `<label class="f">${label}<input id="${id}" type="number" inputmode="decimal" step="${step || 'any'}" min="0" value="${esc(val(value))}"></label>`;
+  const N = (id, label, value, step) => `<label class="f">${label}<input id="${id}" type="number" inputmode="decimal" step="${step || 'any'}" min="0" value="${esc(val(value))}">${FIGS[id] ? `<small class="fig" data-fig="${id}">${figNote(id, value)}</small>` : ''}</label>`;
   const save = '<div class="actions"><button class="btn primary" type="submit">Save</button></div>';
   const hh = [plural(s.adults, 'adult'), s.dogs ? plural(s.dogs, 'dog') : '', s.cats ? plural(s.cats, 'cat') : ''].filter(Boolean).join(', ');
   const backupState = S.lastBackupAt ? esc(fdate(S.lastBackupAt.slice(0, 10))) : '<span class="d-eatfirst">None yet</span>';
@@ -603,10 +627,17 @@ function viewMore() {
       <p class="note">Protected from automatic clean-up by the browser: ${persisted}.</p>`) +
 
     `<form id="set-form" class="stack">` +
-    fold('rules', 'Rations and rules', `${n0(s.kcalSurvival)} / ${n0(s.kcalStandard)} kcal`, `<h3>Per adult, a day</h3><div class="grid2">
-        ${N('s-ksurv', 'Survival, kcal', s.kcalSurvival, 1)}${N('s-kstd', 'Standard, kcal', s.kcalStandard, 1)}${N('s-kact', 'On the move, kcal', s.kcalActive, 1)}${N('s-prot', 'Protein, g', s.proteinPerDay, 1)}</div>
-      <h3>Water, fuel and power, a day</h3><div class="grid2">
-        ${N('s-water', 'Water per person, L', s.waterPerPerson)}${N('s-petw', 'Water per pet, L', s.petWaterEach)}${N('s-flame', 'Cooking flame, min', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh', s.powerWhPerDay, 1)}</div>
+    fold('rules', 'Rations and rules', `${n0(s.kcalSurvival)} / ${n0(s.kcalStandard)} kcal`, `<p class="note">The figures every calculation uses. Each starts at a sourced default; change any to suit your household.</p>
+      <h3>Food, per adult a day</h3><div class="grid2">
+        ${N('s-ksurv', 'At Bare minimum, kcal', s.kcalSurvival, 1)}${N('s-kstd', 'At Basic or Comfortable, kcal', s.kcalStandard, 1)}${N('s-kact', 'On the move, kcal', s.kcalActive, 1)}${N('s-prot', 'Protein, g', s.proteinPerDay, 1)}</div>
+      <h3>Water to drink, litres per person a day</h3><div class="grid2">
+        ${N('s-drink', 'Normally', s.drinkL ?? 3)}${N('s-drinkhot', 'Power off, or on the move', s.drinkHotL ?? 4)}</div>
+      <h3>Water to wash and cook, litres per person a day</h3><div class="grid3">
+        ${N('s-wbare', 'Bare minimum', s.washBareL ?? 2)}${N('s-wbasic', 'Basic', s.washBasicL ?? 5)}${N('s-wcomf', 'Comfortable', s.washComfortL ?? 12)}</div>
+      <h3>Other water figures</h3><div class="grid2">
+        ${N('s-petw', 'Water per pet, L a day', s.petWaterEach)}${N('s-reserve', 'Sealed water held back, days', s.reserveDays ?? 1)}</div>
+      <h3>Fuel and power, a day</h3><div class="grid2">
+        ${N('s-flame', 'Cooking flame, min', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh', s.powerWhPerDay, 1)}</div>
       <h3>What counts</h3><div class="grid2">
         ${N('s-oil', 'Oil, at most % of kcal', Math.round(s.oilCap * 100), 1)}${N('s-sweet', 'Sweeteners, at most % (0 = no cap)', Math.round(s.sweetCap * 100), 1)}
         ${N('s-eat', 'Use first under, days', s.eatFirstDays, 1)}${N('s-soon', 'Soon under, days', s.soonDays, 1)}</div>
@@ -822,7 +853,7 @@ function bagFit(v) {
   const size = C.num(v.unitSize), light = size === null || v.unit === 'pcs' || size <= (C.num(S.settings.bagMaxG) ?? 500);
   switch (v.area) {
     case 'food': return v.needsCooking || !light ? null : 'needs no cooking';
-    case 'water': { const l = C.num(v.cap); return l !== null && l <= (C.num(S.settings.bagMaxL) ?? 1.5) ? 'is small enough to carry' : null; }
+    case 'water': { const l = C.num(v.cap); return (!v.type || v.type === 'drinking') && l !== null && l <= (C.num(S.settings.bagMaxL) ?? 1.5) ? 'is small enough to carry' : null; }
     case 'power': return v.type === 'powerbank' ? 'is portable' : null;
     case 'medical': return 'is something to keep with you';
     case 'hygiene': return ['wipes', 'soap', 'toiletpaper', 'sanitary'].includes(v.type) && light ? 'is light to carry' : null;
@@ -844,7 +875,7 @@ function suggestLocation(v) {
       let state = need.logged ? `${fmtDays(need.days)} of ${r.target} days` : 'nothing logged', adds = '';
       if (v.area === 'food') {
         // Send food to a bag only if it helps with what the bag is actually short of, and is worth its weight.
-        const lim = need.lines.filter(l => l.essential !== false).sort((a, b) => a.days - b.days)[0];
+        const lim = need.lines.filter(l => l.essential !== false && !l.soft).sort((a, b) => a.days - b.days)[0];
         const kcal = C.num(v.kcal), prot = C.num(v.protein), size = C.num(v.unitSize), qty = C.num(v.qty) || 1;
         if (lim && lim.unit === 'g') {
           if (!(prot > 0)) continue;
@@ -909,6 +940,9 @@ function openItem(id, preset, startArea) {
   };
   const HINT = {
     water: 'A 1.5 L bottle is 1.5. A 500 ml bottle is 0.5.',
+    'water:filled': 'The litres one container holds. Fill it from the tap while the tap is safe, in a clean container made for food or drink, and replace the water every 6 months.',
+    'water:washing': 'The litres one bucket or tub holds. Any clean water will do. It counts for washing only, or for drinking once it is treated.',
+    'water:treatment': 'The litres printed on the filter or on the pack of tablets. Count only what works with no mains pressure and no power.',
     fuel: 'Use the burn time for your own stove. Makers quote about 65 to 75 minutes for a 250 g can at full flame.',
     power: 'Use the Wh printed on the label if there is one.',
     medical: 'Regular medication counts toward a scenario only when you enter the doses taken a day.',
@@ -971,9 +1005,10 @@ function openItem(id, preset, startArea) {
     const types = v.area === 'food' ? s.foodCategories.map(c => ({ id: c, label: c }))
       : powerish ? ['fuel', 'power'].flatMap(k => areaOf(k).types.map(t => ({ id: k + ':' + t.id, label: t.id === 'other' ? (k === 'fuel' ? 'Other fuel' : 'Other power') : t.label }))) : a.types;
     const tpl = isNew ? (TEMPLATES[v.area] || []) : [];
-    const checks = `<div class="grid2">${N('i-checkm', 'Check or recharge every (months)', v.checkEveryMonths, 'step="1"')}
-      <label class="f">Last checked<input id="i-lastc" type="date" value="${esc(v.lastChecked)}"></label></div>`;
-    const checksUp = v.area === 'kit' || v.area === 'power';
+    const refill = v.area === 'water' && v.type === 'filled';
+    const checks = `<div class="grid2">${N('i-checkm', refill ? 'Replace the water every (months)' : 'Check or recharge every (months)', v.checkEveryMonths, 'step="1"')}
+      <label class="f">${refill ? 'Last filled' : 'Last checked'}<input id="i-lastc" type="date" value="${esc(v.lastChecked)}"></label></div>`;
+    const checksUp = v.area === 'kit' || v.area === 'power' || refill;
     let special = '';
     if (v.area === 'food') {
       special = `<fieldset><legend>Nutrition for one pack</legend><div class="grid2">${N('i-kcal', 'kcal per pack', v.kcal)}${N('i-prot', 'Protein, g per pack', v.protein)}</div>
@@ -988,10 +1023,10 @@ function openItem(id, preset, startArea) {
         <label class="c"><input id="i-cook" type="checkbox"${v.needsCooking ? ' checked' : ''}><span>Needs cooking or boiling water</span></label>
         <div id="i-kwarn"></div></fieldset>`;
     } else if (a.capLabel) {
-      special = `<fieldset><legend>${esc(a.name)}: what one unit gives</legend><div class="grid2">${N('i-cap', esc(a.capLabel), v.cap)}
+      special = `<fieldset><legend>${esc(a.name)}: what one unit gives</legend><div class="grid2">${N('i-cap', v.area === 'water' && v.type === 'treatment' ? 'Litres one unit makes safe' : esc(a.capLabel), v.cap)}
         ${v.area === 'medical' ? N('i-perday', 'Doses taken a day (leave blank if not taken daily)', v.perDay) : ''}</div>
         ${v.area === 'power' ? `<details><summary>Work out Wh from mAh</summary><div class="grid2 gap-top">${N('c-mah', 'Capacity in mAh', '')}</div><div class="actions start gap-top"><button class="btn small" type="button" data-x="mah">Fill in Wh</button></div></details>` : ''}
-        <p class="note">${esc(HINT[v.area] || '')}</p><p class="note" id="i-basis">${esc(v.basis)}</p></fieldset>`;
+        <p class="note">${esc(HINT[v.area + ':' + v.type] || HINT[v.area] || '')}</p><p class="note" id="i-basis">${esc(v.basis)}</p></fieldset>`;
     }
     dlg.innerHTML = `<form class="dlg" id="item-form" novalidate>
       <div class="dlg-head"><h2>${isNew ? (preset && preset._batch ? 'New batch' : 'Add item') : 'Edit item'}</h2><button class="btn small" type="button" data-x="close">Close</button></div>
@@ -1231,7 +1266,9 @@ function openItem(id, preset, startArea) {
       else if (t.id === 'i-type') {
         const before = v.area;
         collect();
-        if (v.area !== before) { v.cap = ''; v.basis = ''; capAuto = false; capTouched = !isNew; draw(); } else hints();   // fuel and power count differently
+        if (v.area !== before) { v.cap = ''; v.basis = ''; capAuto = false; capTouched = !isNew; draw(); }   // fuel and power count differently
+        else if (v.area === 'water') { if (isNew && v.type === 'filled' && v.checkEveryMonths === '') v.checkEveryMonths = 6; draw(); }   // each kind of water has its own wording
+        else hints();
       }
       else if (['i-cook', 'i-size', 'i-unit', 'i-cap', 'i-kcal', 'i-prot', 'i-qty'].includes(t.id)) hints();
       else if (['c-k', 'c-p', 'c-w'].includes(t.id)) calcLive();
@@ -1285,28 +1322,54 @@ function openItem(id, preset, startArea) {
 }
 
 // ---------- scenarios ----------
+// What the water rules found, in sentences. p is the plan from water.js.
+function waterNotes(p, scn, r) {
+  const s = S.settings, out = [], st = p.stock, t = p.tap, L = v => n1(v) + ' L';
+  const held = [st.sealed ? `${L(st.sealed)} sealed` : '', st.filled ? `${L(st.filled)} you filled` : '', st.heater ? `${L(st.heater)} in the water heater` : '', st.wash ? `${L(st.wash)} for washing` : '', st.treat ? `a way to treat ${L(st.treat)}` : ''].filter(Boolean);
+  out.push((held.length ? 'In reach: ' + held.join(', ') + '.' : 'No water is logged in reach.') + (st.reserve > 0 ? ` ${L(st.reserve)} of the sealed water is held in reserve and not counted.` : ''));
+  if (t.byPower) out.push(t.assumed ? 'This assumes your taps stop when the power goes, because you have not said. Answer it under More, in Your household and situation.'
+    : t.stopsAfter > 0 ? `Your taps run for about ${plural(t.stopsAfter, 'day')} after the power goes, then stop.` : 'Your taps stop when the power goes, so this is a water cut too.');
+  if (t.state === 'unsafe') out.push('The tap still washes. Water to drink must be bottled, filled earlier, or treated.' + (p.drinkDays === Infinity ? ' Boiling it on your hob covers drinking.' : ''));
+  if (scn.place === 'away') out.push(`On the move only drinking water is counted, at ${L(s.drinkHotL ?? 4)} a person a day.`);
+  if (p.hot && scn.place !== 'away') out.push(`Drinking is counted at ${L(s.drinkHotL ?? 4)} a person, the figure for heat, because there is no cooling with the power off.`);
+  const f = p.fill;
+  if (f) {
+    const what = [f.drink ? `your containers (${L(f.drink)})` : '', f.wash ? `the tub (${L(f.wash)})` : ''].filter(Boolean).join(' and ');
+    const adds = [f.drink && p.D ? `${fmtDays(f.drinkDays)} days of drinking water` : '', f.wash && p.W ? `${fmtDays(f.washDays)} days of washing water` : ''].filter(Boolean).join(' and ');
+    if (f.way === 'no') out.push(`There is no time to fill ${what} here: the taps stop without warning. Keep some of it filled.`);
+    else out.push(`First move: fill ${what} ${f.way === 'running' ? 'while the taps still run' : f.way === 'warning' ? 'when the cut is announced' : 'if there is time before the taps stop'}.${adds ? ` That adds ${adds}.` : ''} It is not counted above.`);
+  }
+  if (p.washCounted && p.posture === 'bare' && r.target > 7) out.push('Bare minimum is 5 L a person a day in all. The Sphere standard sets 7.5 L as the least, so treat this level as a few days only.');
+  if (p.washCounted) out.push('Flushing the toilet is not included.');
+  return out;
+}
+
 function openScenario(id) {
   const scn = S.scenarios.find(x => x.id === id);
   if (!scn) return;
   const s = S.settings, r = C.evaluate(scn, live(), s, today(), typeLabel);
-  const away = scn.place === 'away';
+  const away = scn.place === 'away', tap = WT.tapOf(scn);
+  const wn = r.needs.find(n => n.id === 'water'), wt = wn && wn.info ? wn.info.tap : null;      // what the power cut does to the taps here
   const yn = (on, label) => `<span class="cond ${on ? 'on' : 'off'}">${on ? '✓' : '✕'} ${label}</span>`;
-  const cond = `<span class="cond">${esc(plural(scn.days, 'day'))}</span><span class="cond">${away ? 'Away from home' : 'At home'}</span>` + yn(scn.tap && !away, 'Tap water') + yn(scn.grid && !away, 'Mains power') + yn(scn.shops && !away, 'Shops') +
+  const cond = `<span class="cond">${esc(plural(scn.days, 'day'))}</span><span class="cond">${away ? 'Away from home' : 'At home'}</span>` +
+    (tap === 'unsafe' ? '<span class="cond warn">! Tap water unsafe</span>' : yn(tap === 'on', 'Tap water')) +
+    (wt && wt.byPower ? `<span class="cond warn">! ${wt.stopsAfter > 0 ? `Taps stop after ${plural(wt.stopsAfter, 'day')}` : 'Taps stop with the power'}</span>` : '') + yn(scn.grid && !away, 'Mains power') + yn(scn.shops && !away, 'Shops') +
     `<span class="cond">${n0(scenarioKcal(scn))} kcal per adult</span>`;
   const where = away ? (scn.locations && scn.locations.length ? 'Counting only: ' + scn.locations.join(', ') + '.' : 'No locations chosen, so everything is counted. Edit the scenario to pick the bags.') : '';
+  const dd = d => (d === Infinity ? 'covered' : fmtDays(d) + ' days');
   let rows = '';
   for (const n of r.needs) {
     const ratio = n.logged && r.target > 0 ? Math.min(1, n.days / r.target) : 0;
     const cls = !n.logged ? 'none' : n.days >= r.target ? 'ok' : ratio >= 0.5 ? 'short' : 'bad';
     rows += `<section class="needblock nb-${cls}"><div class="nb-head"><span class="thumb sm a-${esc(n.id)}">${areaIcon(n.id)}</span><h3>${esc(n.name)}</h3>
-      <span class="nb-days">${n.logged ? `<b>${fmtDays(n.days)}</b> of ${r.target} days` : 'not logged'}</span></div>
+      <span class="nb-days">${!n.logged ? 'not logged' : n.days === Infinity ? 'covered' : `<b>${fmtDays(n.days)}</b> of ${r.target} days`}</span></div>
       <div class="bar"><i style="width:${(ratio * 100).toFixed(1)}%"></i></div><ul>`;
     for (const l of n.lines) {
       const uses = l.unit === 'person-days' ? plural(n1(l.perDay), 'person') : l.unit === 'pet-days' ? plural(n1(l.perDay), 'pet') : amount(l.perDay, l.unit) + ' a day';
-      const have = l.unit === 'person-days' || l.unit === 'pet-days' ? (l.have ? 'in stock' : 'none logged') : amount(l.have, l.unit);
-      rows += `<li><span>${esc(l.label)}${l.essential === false ? ' <small>(not counted)</small>' : ''}<small>${esc(have)} · ${esc(uses)}</small></span><b>${fmtDays(l.days)} days</b></li>`;
+      const have = l.unit === 'person-days' || l.unit === 'pet-days' ? (l.have ? 'in stock' : 'none logged') : l.have === Infinity ? 'does not run out' : amount(l.have, l.unit);
+      rows += `<li${l.soft && l.days < r.target ? ' class="l-short"' : ''}><span>${esc(l.label)}${l.essential === false ? ' <small>(not counted)</small>' : ''}<small>${esc(have)} · ${esc(uses)}</small></span><b>${dd(l.days)}</b></li>`;
     }
-    rows += '</ul></section>';
+    rows += '</ul>' + (n.id === 'water' && n.info ? waterNotes(n.info, scn, r).map(t => `<p class="note">${esc(t)}</p>`).join('') : '') + '</section>';
   }
   const notes = [];
   const food = r.needs.find(n => n.id === 'food');
@@ -1317,11 +1380,20 @@ function openScenario(id) {
     if (i.sweet > i.sweetUsed + 1) notes.push(`Sweeteners are capped at ${Math.round(s.sweetCap * 100)}% of calories: ${n0(i.sweetUsed)} of ${n0(i.sweet)} kcal counted.`);
     if (i.noKcal) notes.push(`${plural(i.noKcal, 'food item')} with no kcal figure count as zero.`);
   }
+  // What each level of cutting back buys: the lines that change with it, side by side.
+  const pos = WT.postureOf(s), byPos = WT.POSTURES.map(p => C.evaluate(scn, live(), { ...s, posture: p[0] }, today(), typeLabel));
+  const lineOf = (res, nid, key) => { const n = res.needs.find(x => x.id === nid); return n ? n.lines.find(l => l.key === key) : null; };
+  const cmp = [['water', 'water', 'Drinking water'], ['water', 'wash', 'Washing water'], ['food', 'kcal', 'Food']]
+    .map(([nid, key, label]) => ({ label, days: byPos.map(res => { const l = lineOf(res, nid, key); return l ? l.days : null; }) }))
+    .filter(row => row.days.some(d => d !== null) && new Set(row.days.map(d => (d === null ? '' : dd(d)))).size > 1);
+  const compare = cmp.length ? `<details class="more"><summary>Compare the three levels</summary><table class="cmp"><tr><th></th>${WT.POSTURES.map(p => `<th${p[0] === pos ? ' class="cur"' : ''}>${p[1]}</th>`).join('')}</tr>
+    ${cmp.map(row => `<tr><td>${row.label}</td>${row.days.map((d, i) => `<td${WT.POSTURES[i][0] === pos ? ' class="cur"' : ''}>${d === null ? '–' : d === Infinity ? 'covered' : fmtDays(d)}</td>`).join('')}</tr>`).join('')}</table>
+    <p class="note">Days each lasts in this scenario. Change your level on the Ready screen.</p></details>` : '';
   openDlg(() => {
     dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>${esc(scn.name)}</h2><button class="btn small" data-x="close">Close</button></div>
       <div class="conds">${cond}</div>${where ? `<p class="note">${esc(where)}</p>` : ''}
       ${r.needs.length ? rows : '<p class="note">With water, power and shops all working, nothing needs stocking.</p>'}
-      ${notes.map(t => `<p class="note">${esc(t)}</p>`).join('')}
+      ${notes.map(t => `<p class="note">${esc(t)}</p>`).join('')}${compare}
       <div class="actions"><button class="btn" data-x="edit">Edit scenario</button></div></div>`;
     dlg.onclick = e => {
       const b = e.target.closest('[data-x]');
@@ -1346,14 +1418,15 @@ function openScenarioEdit(id) {
       <div class="grid2"><label class="f">Where you are<select id="n-place">${opt('home', 'At home', v.place)}${opt('away', 'Away from home', v.place)}</select></label>
         <label class="f">Food ration<select id="n-ration">${opt('household', 'Survival or Standard, as set on Ready', v.ration)}${opt('active', `On the move (${n0(s.kcalActive)} kcal)`, v.ration)}</select></label></div>
       ${away ? `<p class="note">Away from home counts no tap water, mains power or shops.</p>${C_('n-pets', 'Pets come along', v.petsAlong !== false)}`
-        : `<fieldset><legend>What still works</legend>${C_('n-tap', 'Tap water', v.tap)}${C_('n-grid', 'Mains power', v.grid)}${C_('n-shops', 'Shops', v.shops)}</fieldset>`}
+        : `<fieldset><legend>What still works</legend><label class="f">Tap water<select id="n-tapstate">${opt('on', 'Works', WT.tapOf(v))}${opt('unsafe', 'Runs, but is not safe to drink', WT.tapOf(v))}${opt('off', 'Off', WT.tapOf(v))}</select></label>
+          ${C_('n-grid', 'Mains power', v.grid)}${C_('n-shops', 'Shops', v.shops)}</fieldset>`}
       <fieldset><legend>${away ? 'Which bags or places you take' : 'Count only these places'} (none ticked = all)</legend>${s.locations.map((l, i) => C_('n-loc-' + i, esc(l), v.locations.includes(l))).join('')}</fieldset>
       <div class="actions">${orig ? '<button class="btn danger" type="button" data-x="del">Delete</button>' : ''}<button class="btn primary" type="submit">Save</button></div></form>`;
   };
   const collect = () => {
     const el = fid => $('#' + fid, dlg);
     v.name = el('n-name').value; v.days = el('n-days').value; v.place = el('n-place').value; v.ration = el('n-ration').value;
-    if (el('n-tap')) { v.tap = el('n-tap').checked; v.grid = el('n-grid').checked; v.shops = el('n-shops').checked; }
+    if (el('n-tapstate')) { const t = el('n-tapstate').value; v.tap = t === 'on'; v.tapState = t === 'unsafe' ? 'unsafe' : ''; v.grid = el('n-grid').checked; v.shops = el('n-shops').checked; }
     if (el('n-pets')) v.petsAlong = el('n-pets').checked;
     v.locations = s.locations.filter((l, i) => el('n-loc-' + i).checked);
   };
@@ -1384,6 +1457,7 @@ function openScenarioEdit(id) {
       if (!name || !days || days < 1) { toast('Enter a name and the number of days.'); return; }
       const next = { id: orig ? orig.id : uid(), name, days: Math.round(days), place: v.place, ration: v.ration,
         tap: !!v.tap, grid: !!v.grid, shops: !!v.shops, locations: v.locations, petsAlong: v.petsAlong !== false };
+      if (v.tapState === 'unsafe' && v.place !== 'away') next.tapState = 'unsafe';    // older versions read this as the tap being off, the safer mistake
       if (orig) S.scenarios = S.scenarios.map(x => (x.id === orig.id ? next : x)); else S.scenarios.push(next);
       if (await guard(saveScenarios)) { dlg.close(); refresh(); }
     };
@@ -1395,7 +1469,7 @@ function openMeals() {
   const s = S.settings;
   const bagLocs = [...new Set(S.scenarios.filter(x => x.place === 'away').flatMap(x => (Array.isArray(x.locations) ? x.locations : [])))];
   const state = { canCook: true, skipBags: bagLocs.length > 0 };
-  const kcal = s.rationLevel === 'standard' ? s.kcalStandard : s.kcalSurvival;
+  const kcal = C.kcalFor({}, s);
   const qtyText = l => {
     const packs = Math.round(l.packs * 100) / 100, whole = Math.abs(packs - Math.round(packs)) < 0.005;
     if (whole) return plural(Math.round(packs), 'pack');
@@ -1469,7 +1543,10 @@ function openSituation(startAt) {
       const count = (id, label, v) => `<label class="f">${label}<input id="${id}" type="number" inputmode="numeric" min="0" step="1" value="${esc(val(v))}"></label>`;
       dlg.innerHTML = `<div class="dlg">${head(sec.title)}<p class="note">${esc(sec.intro)} ${step} of ${SIT.SECTIONS.length}.</p>
         ${sec.id === 'people' ? `<div class="grid3">${count('p-adults', 'Adults', s.adults)}${count('p-dogs', 'Dogs', s.dogs)}${count('p-cats', 'Cats', s.cats)}</div><p class="note">These three numbers drive every calculation in the app.</p>` : ''}
-        ${sec.qs.map(q => { const cur = [].concat(sit.answers[q.id] || []); return `<fieldset class="q"><legend>${esc(q.q)}${q.multi ? ' <small>Pick any</small>' : ''}</legend><div class="chipwrap">${q.opts.map(o =>
+        ${sec.qs.filter(q => SIT.asked(q, sit.answers)).map(q => { const cur = [].concat(sit.answers[q.id] || []);
+          if (q.num) return `<fieldset class="q"><legend>${esc(q.q)}</legend><div class="numrow"><input type="number" inputmode="decimal" min="0" step="any" data-num="${q.id}" aria-label="${esc(q.q)}" value="${typeof sit.answers[q.id] === 'number' ? esc(sit.answers[q.id]) : ''}"><span>${esc(q.num)}</span>
+            <button class="chip" type="button" data-q="${q.id}" data-v="dk" aria-pressed="${sit.answers[q.id] === 'dk'}">Not sure</button></div>${q.hint ? `<p class="note">${esc(q.hint)}</p>` : ''}</fieldset>`;
+          return `<fieldset class="q"><legend>${esc(q.q)}${q.multi ? ' <small>Pick any</small>' : ''}</legend><div class="chipwrap">${q.opts.map(o =>
           `<button class="chip" type="button" data-q="${q.id}" data-v="${o[0]}" aria-pressed="${cur.includes(o[0])}">${esc(o[1])}</button>`).join('')}<button class="chip other" type="button" data-oq="${q.id}" aria-pressed="${!!sit.other[q.id]}">Other…</button></div>
           <input class="otherbox" data-other="${q.id}" maxlength="200" placeholder="Type your own answer" aria-label="Your own answer" value="${esc(sit.other[q.id] || '')}"${sit.other[q.id] ? '' : ' hidden'}></fieldset>`; }).join('')}
         <label class="f">Anything to add about this (optional)<textarea id="sit-note" rows="2">${esc(sit.notes[sec.id] || '')}</textarea></label>
@@ -1486,7 +1563,7 @@ function openSituation(startAt) {
   };
   const keepNote = () => { const n = $('#sit-note', dlg); if (!n || step < 1 || step >= last) return; const id = SIT.SECTIONS[step - 1].id, v = n.value.trim().slice(0, 600); if ((sit.notes[id] || '') !== v) { if (v) sit.notes[id] = v; else delete sit.notes[id]; dirty = true; } };
   openDlg(() => {
-    dlgCleanup = () => { keepNote(); save().then(() => { if (S.view === 'more' || S.view === 'ready') render(); }); };
+    dlgCleanup = () => { keepNote(); save().then(() => { if (S.view !== 'log') render(); }); };      // the answers change Ready, To do and More
     paint();
     dlg.onchange = e => {
       const head = { 'p-adults': 'adults', 'p-dogs': 'dogs', 'p-cats': 'cats' }[e.target.id];
@@ -1498,6 +1575,14 @@ function openSituation(startAt) {
       dirty = true;
     };
     dlg.oninput = e => {
+      const nq = e.target.dataset.num;
+      if (nq !== undefined) {                          // a question answered with a number
+        const n = C.num(e.target.value);
+        if (n !== null && n >= 0) sit.answers[nq] = n; else delete sit.answers[nq];
+        dirty = true;
+        const dk = dlg.querySelector(`[data-q="${nq}"]`); if (dk) dk.setAttribute('aria-pressed', 'false');
+        return;
+      }
       const q = e.target.dataset.other;
       if (q === undefined) return;
       const v = e.target.value.trim();
@@ -1518,6 +1603,9 @@ function openSituation(startAt) {
         if (cur.length) sit.answers[q.id] = q.multi ? cur : cur[0]; else delete sit.answers[q.id];
         dirty = true;
         dlg.querySelectorAll(`[data-q="${q.id}"]`).forEach(b => b.setAttribute('aria-pressed', String(cur.includes(b.dataset.v))));
+        const box = dlg.querySelector(`[data-num="${q.id}"]`); if (box && cur.length) box.value = '';
+        // An answer can bring up a follow-up question, or remove one.
+        if (SIT.SECTIONS[step - 1].qs.some(x => x.when)) { keepNote(); const y = dlg.scrollTop; paint(); dlg.scrollTop = y; }
         return;
       }
       const b = e.target.closest('[data-x]');
@@ -1714,7 +1802,9 @@ document.addEventListener('click', async e => {
     case 'todo-go': {
       const m = todoModel(), x = [...m.gaps, ...m.finds, ...m.flags, ...m.off].find(y => y.key === b.dataset.k);
       if (!x) break;
-      if (x.kind === 'gap') openItem(null, null, x.g.need); else openSituation(x.f.step);
+      if (x.kind === 'gap') { if (x.g.key === 'water:wash') openItem(null, { area: 'water', type: 'washing' }); else openItem(null, null, x.g.need); }
+      else if (x.f.item) openItem(null, x.f.item);
+      else openSituation(x.f.step);
       break;
     }
     case 'todo-later': {
@@ -1725,6 +1815,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'todo-back': await todoOff(b.dataset.k, ''); break;
+    case 'fig-reset': { const box = $('#' + id); if (box) { box.value = String(FIGS[id].def); b.closest('[data-fig]').innerHTML = figNote(id, box.value) + ' Tap Save to keep it.'; } break; }
     case 'scn': openScenario(id); break;
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
@@ -1765,7 +1856,8 @@ document.addEventListener('click', async e => {
     }
     case 'area': S.f.area = b.dataset.v; render(); break;
     case 'filters': S.f.open = !(S.f.open || S.f.loc || S.f.st || (S.f.sort && S.f.sort !== 'due')); if (!S.f.open) Object.assign(S.f, { loc: '', st: '', sort: 'due' }); render(); break;
-    case 'ration': S.settings.rationLevel = b.dataset.v; await guard(saveSettings); render(); break;
+    case 'posture':        // the food ration follows the posture; rationLevel is kept in step for devices on an older version
+      Object.assign(S.settings, { posture: b.dataset.v, rationLevel: b.dataset.v === 'bare' ? 'survival' : 'standard' }); await guard(saveSettings); render(); break;
     case 'backup': await guard(() => exportBackup($('#b-photos').checked)); break;
     case 'csv': download(C.foodCSV(S.items, S.settings, today()), `food-inventory-${today()}.csv`, 'text/csv'); toast('Food list saved to your downloads.'); break;
     case 'key-remove':
@@ -1787,7 +1879,11 @@ document.addEventListener('click', async e => {
   }
 });
 
-main.addEventListener('input', e => { if (e.target.dataset.f === 'q') { S.f.q = e.target.value; render(); } });
+main.addEventListener('input', e => {
+  if (e.target.dataset.f === 'q') { S.f.q = e.target.value; render(); return; }
+  const fig = FIGS[e.target.id] && main.querySelector(`[data-fig="${e.target.id}"]`);
+  if (fig) fig.innerHTML = figNote(e.target.id, e.target.value);
+});
 
 main.addEventListener('change', e => {
   const f = e.target.dataset.f;
@@ -1821,7 +1917,8 @@ main.addEventListener('submit', async e => {
     else if (moved) toast(`Location removed. ${plural(moved, 'item')} moved.`);
     Object.assign(S.settings, {
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
-      waterPerPerson: g('s-water') ?? 0, petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
+      drinkL: g('s-drink') ?? 3, drinkHotL: g('s-drinkhot') ?? 4, washBareL: g('s-wbare') ?? 2, washBasicL: g('s-wbasic') ?? 5, washComfortL: g('s-wcomf') ?? 12, reserveDays: g('s-reserve') ?? 1,
+      petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
       oilCap: Math.min(0.95, (g('s-oil') ?? 0) / 100), sweetCap: Math.min(0.95, (g('s-sweet') ?? 0) / 100),
       eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180), bagMaxG: g('s-bagg') ?? 500, bagMaxL: g('s-bagl') ?? 1.5, bagMinKcal100: g('s-bagk') ?? 300,
       proteinLimits: $('#s-protlim').checked, countExpired: $('#s-expired').checked,
