@@ -8,7 +8,7 @@ import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 import * as SIT from './situation.js';
 
-const APP_VERSION = '1.14.1';
+const APP_VERSION = '1.14.2';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -552,7 +552,6 @@ function viewMore() {
       <p class="note">Protected from automatic clean-up by the browser: ${persisted}.</p>`) +
 
     `<form id="set-form" class="stack">` +
-    fold('house', 'Household', esc(hh), `<div class="grid3">${N('s-adults', 'Adults', s.adults, 1)}${N('s-dogs', 'Dogs', s.dogs, 1)}${N('s-cats', 'Cats', s.cats, 1)}</div>${save}`) +
     fold('rules', 'Rations and rules', `${n0(s.kcalSurvival)} / ${n0(s.kcalStandard)} kcal`, `<h3>Per adult, a day</h3><div class="grid2">
         ${N('s-ksurv', 'Survival, kcal', s.kcalSurvival, 1)}${N('s-kstd', 'Standard, kcal', s.kcalStandard, 1)}${N('s-kact', 'On the move, kcal', s.kcalActive, 1)}${N('s-prot', 'Protein, g', s.proteinPerDay, 1)}</div>
       <h3>Water, fuel and power, a day</h3><div class="grid2">
@@ -575,7 +574,8 @@ function viewMore() {
       <label class="f">Model<select id="k-model">${MODELS.map(m => opt(m.id, m.label, s.apiModel)).join('')}</select></label>
       <div class="actions">${S.apiKey ? '<button class="btn danger" type="button" data-act="key-remove">Remove key</button><button class="btn" type="button" data-act="key-test">Test</button>' : ''}<button class="btn primary" type="submit">Save</button></div>`, 'form', ' id="key-form"') +
 
-    fold('situation', 'Your situation', (() => { const p = SIT.progress((s.situation || {}).answers, (s.situation || {}).other); return `${p.done} of ${p.total} answered`; })(), `
+    fold('situation', 'Your household and situation', (() => { const p = SIT.progress((s.situation || {}).answers, (s.situation || {}).other); return `${esc(hh)} · ${p.done} of ${p.total}`; })(), `
+      <div class="actions start"><button class="btn small" data-act="situation" data-v="people">Change who is in the household</button></div>
       <p class="note">Tap-through questions about your home, water, vehicle, bags, other places and plan. The answers flag gaps your supplies cannot show, and Ask Claude uses them. No addresses.</p>
       <div class="actions start"><button class="btn primary small" data-act="situation">${SIT.progress((s.situation || {}).answers, (s.situation || {}).other).done ? 'Continue the questions' : 'Answer the questions'}</button>
         ${SIT.flags((s.situation || {}).answers).length ? `<button class="btn small" data-act="situation" data-v="end">See what it flags (${SIT.flags((s.situation || {}).answers).length})</button>` : ''}</div>`) +
@@ -1378,7 +1378,9 @@ function openSituation(startAt) {
         <p class="note">Add or rename locations under More → Locations and categories.</p>${foot('Next')}</div>`;
     } else if (step < last) {
       const sec = SIT.SECTIONS[step - 1];
+      const count = (id, label, v) => `<label class="f">${label}<input id="${id}" type="number" inputmode="numeric" min="0" step="1" value="${esc(val(v))}"></label>`;
       dlg.innerHTML = `<div class="dlg">${head(sec.title)}<p class="note">${esc(sec.intro)} ${step} of ${SIT.SECTIONS.length}.</p>
+        ${sec.id === 'people' ? `<div class="grid3">${count('p-adults', 'Adults', s.adults)}${count('p-dogs', 'Dogs', s.dogs)}${count('p-cats', 'Cats', s.cats)}</div><p class="note">These three numbers drive every calculation in the app.</p>` : ''}
         ${sec.qs.map(q => { const cur = [].concat(sit.answers[q.id] || []); return `<fieldset class="q"><legend>${esc(q.q)}${q.multi ? ' <small>Pick any</small>' : ''}</legend><div class="chipwrap">${q.opts.map(o =>
           `<button class="chip" type="button" data-q="${q.id}" data-v="${o[0]}" aria-pressed="${cur.includes(o[0])}">${esc(o[1])}</button>`).join('')}<button class="chip other" type="button" data-oq="${q.id}" aria-pressed="${!!sit.other[q.id]}">Other…</button></div>
           <input class="otherbox" data-other="${q.id}" maxlength="200" placeholder="Type your own answer" aria-label="Your own answer" value="${esc(sit.other[q.id] || '')}"${sit.other[q.id] ? '' : ' hidden'}></fieldset>`; }).join('')}
@@ -1399,6 +1401,8 @@ function openSituation(startAt) {
     dlgCleanup = () => { keepNote(); save().then(() => { if (S.view === 'more' || S.view === 'ready') render(); }); };
     paint();
     dlg.onchange = e => {
+      const head = { 'p-adults': 'adults', 'p-dogs': 'dogs', 'p-cats': 'cats' }[e.target.id];
+      if (head) { const n = C.num(e.target.value); S.settings[head] = Math.max(head === 'adults' ? 1 : 0, Math.round(n ?? (head === 'adults' ? 1 : 0))); e.target.value = String(S.settings[head]); dirty = true; return; }
       const k = e.target.dataset.kind;
       if (k === undefined) return;
       const loc = s.locations[Number(k)];
@@ -1623,7 +1627,7 @@ document.addEventListener('click', async e => {
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
     case 'advise': openAdvisor(b.dataset.v); break;
-    case 'situation': openSituation(b.dataset.v === 'end' ? 999 : 0); break;
+    case 'situation': openSituation(b.dataset.v === 'end' ? 999 : b.dataset.v === 'people' ? 1 : 0); break;
     case 'sync-now': b.disabled = true; if (await syncNow()) toast('Synced.'); else toast(syncText()); render(); break;
     case 'sync-code': S.sync.show = !S.sync.show; render(); break;
     case 'sync-copy':
@@ -1713,7 +1717,6 @@ main.addEventListener('submit', async e => {
     if (usedL.length || usedC.length) { locs = locs.concat(usedL); cats = cats.concat(usedC); toast('Kept because items still use them: ' + usedL.concat(usedC).join(', ')); }
     else if (moved) toast(`Location removed. ${plural(moved, 'item')} moved.`);
     Object.assign(S.settings, {
-      adults: Math.round(g('s-adults') ?? 1), dogs: Math.round(g('s-dogs') ?? 0), cats: Math.round(g('s-cats') ?? 0),
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
       waterPerPerson: g('s-water') ?? 0, petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
       oilCap: Math.min(0.95, (g('s-oil') ?? 0) / 100), sweetCap: Math.min(0.95, (g('s-sweet') ?? 0) / 100),
