@@ -21,6 +21,11 @@ export const AREAS = [
       { id: 'documents', label: 'Documents' }, { id: 'cash', label: 'Cash' }, { id: 'other', label: 'Other' }] },
 ];
 
+// The areas the app works with today. Cooking fuel is kept as its own kind of item but shown inside Power.
+export const ACTIVE = ['water', 'food', 'fuel', 'power', 'pets'];
+export const UI_AREAS = [{ id: 'water', name: 'Water', short: 'Water' }, { id: 'food', name: 'Food', short: 'Food' }, { id: 'power', name: 'Power and fuel', short: 'Power' }, { id: 'pets', name: 'Pets', short: 'Pets' }];
+export const uiArea = id => (id === 'fuel' ? 'power' : id);
+
 export const areaOf = id => AREAS.find(a => a.id === id) || AREAS[1];
 
 export function typeLabel(area, type) {
@@ -68,7 +73,7 @@ export const DEFAULT_SETTINGS = {
   waterPerPerson: 4, petWaterEach: 0.3,
   flameMinPerDay: 30, powerWhPerDay: 50,
   oilCap: 0.1, oilCategory: 'Oil & Fat', sweetCap: 0, sweetCategory: 'Honey & Sweeteners',
-  eatFirstDays: 90, soonDays: 180, bagMaxG: 500, bagMaxL: 1.5, bagMinKcal100: 300, countExpired: true,
+  eatFirstDays: 90, soonDays: 180, bagMaxG: 500, bagMaxL: 1.5, bagMinKcal100: 300, areas: ACTIVE.slice(), countExpired: true,
   locations: ['Home', 'Bag 1', 'Bag 2', 'Car'],
   foodCategories: ['Rice & Grains', 'Noodles & Porridge', 'Protein (canned)', 'Soups', 'Vegetables', 'Fruit & Snacks',
     'Crackers & Biscuits', 'Honey & Sweeteners', 'Beverages', 'Oil & Fat', 'Seasoning'],

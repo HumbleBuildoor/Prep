@@ -1,14 +1,14 @@
 // Prep: the app shell, views and dialogs. Data lives in IndexedDB on this device (see db.js).
 
 import * as C from './calc.js';
-import { AREAS, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_SCENARIOS, SOURCES, RELAY_URL } from './defaults.js';
+import { AREAS, ACTIVE, UI_AREAS, uiArea, areaOf, typeLabel, TEMPLATES, MODELS, DEFAULT_SETTINGS, DEFAULT_SCENARIOS, SOURCES, RELAY_URL } from './defaults.js';
 import * as DB from './db.js';
 import { readLabel, testKey, askJson } from './reader.js';
 import * as ADV from './advisor.js';
 import * as SY from './sync.js';
 import * as SIT from './situation.js';
 
-const APP_VERSION = '1.14.2';
+const APP_VERSION = '1.15.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -46,7 +46,9 @@ const S = {
   apiKey: '', deviceId: '', lastBackupAt: '', persisted: null, installEvt: null, swReg: null, updateReady: false, updateRequested: false, error: '',
 };
 const main = $('#main'), dlg = $('#dlg'), askDlg = $('#ask');
-const live = () => S.items.filter(i => !i.deleted);
+const live = () => S.items.filter(i => !i.deleted && ACTIVE.includes(i.area));
+// Items logged under areas the app no longer shows (medical, hygiene, kit). Kept until the owner decides.
+const orphans = () => S.items.filter(i => !i.deleted && !ACTIVE.includes(i.area));
 const today = () => C.todayStr();
 
 async function load() {
@@ -449,7 +451,7 @@ function viewReady() {
 function filtered() {
   const f = S.f, q = f.q.trim().toLowerCase();
   const list = live().filter(it => {
-    if (f.area && it.area !== f.area) return false;
+    if (f.area && uiArea(it.area) !== f.area) return false;
     if (f.loc && it.location !== f.loc) return false;
     if (q && ![it.name, it.brand, it.notes, it.barcode, it.category].join(' ').toLowerCase().includes(q)) return false;
     if (f.st === 'draft') return C.missing(it).length > 0;
@@ -475,7 +477,7 @@ function viewSupplies() {
   const active = (f.loc ? 1 : 0) + (f.st ? 1 : 0) + (f.sort && f.sort !== 'due' ? 1 : 0), open = f.open || active > 0;
   return `<div class="searchrow"><input type="search" id="f-q" data-f="q" placeholder="Search ${total} items" value="${esc(f.q)}" aria-label="Search">
       <button class="btn icon${active ? ' on' : ''}" data-act="filters" aria-expanded="${open}" aria-label="Filters and sorting">${svg(FILTER)}${active ? `<b>${active}</b>` : ''}</button></div>
-    <div class="chiprow" role="group" aria-label="Area">${chip('', 'All')}${AREAS.map(a => chip(a.id, a.short)).join('')}</div>
+    <div class="chiprow" role="group" aria-label="Area">${chip('', 'All')}${UI_AREAS.map(a => chip(a.id, a.short)).join('')}</div>
     <div class="filters"${open ? '' : ' hidden'}>
       <select id="f-loc" data-f="loc" aria-label="Location">${opt('', 'All locations', f.loc)}${s.locations.map(l => opt(l, l, f.loc)).join('')}</select>
       <select id="f-st" data-f="st" aria-label="Status">${opt('', 'Any status', f.st)}${opt('expired', 'Past date or check overdue', f.st)}${opt('eatfirst', 'Use first', f.st)}${opt('soon', 'Soon', f.st)}${opt('nodate', 'No date', f.st)}${opt('low', 'Low or out', f.st)}${opt('draft', 'Needs details', f.st)}${opt('uncounted', 'Quantity not counted', f.st)}${opt('estimate', 'Nutrition is an estimate', f.st)}${opt('notlabel', 'Nutrition not from the label', f.st)}</select>
@@ -628,6 +630,8 @@ function renderBanner() {
   if (live().length >= 5 && (days === null || days > 30)) {
     h += `<a class="backupnote" href="#more">${days === null ? 'No backup yet' : `Last backup ${days} days ago`} · back up</a>`;
   }
+  const gone = orphans();
+  if (gone.length && !S.settings.orphansHidden) h += `<div class="banner info"><span>${plural(gone.length, 'item')} are in areas the app no longer uses.</span><button class="btn small" data-act="orphans">Review</button></div>`;
   b.innerHTML = h;
 }
 
@@ -655,6 +659,33 @@ dlg.addEventListener('close', () => {
   if (dlgCleanup) { dlgCleanup(); dlgCleanup = null; }
   dlg.innerHTML = '';
 });
+
+// Items left in areas that were removed from the app: delete them, or keep them out of sight.
+function openOrphans() {
+  const list = orphans();
+  openDlg(() => {
+    dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Items in removed areas</h2><button class="btn small" data-x="close">Close</button></div>
+      <p class="note">The app now covers water, food, power and fuel, and pets. These items were logged under medical, hygiene or kit, which are switched off for now.</p>
+      <ul class="plain">${list.map(it => `<li><span>${esc(it.name)} <small>${esc(areaOf(it.area).id === it.area ? areaOf(it.area).name : it.area)}</small></span><b>${esc(n1(C.num(it.qty) || 0))}</b></li>`).join('')}</ul>
+      <p class="note">Deleting removes them from every synced device and cannot be undone. Hiding keeps them in your data in case those areas come back.</p>
+      <div class="actions"><button class="btn" data-x="hide">Keep them hidden</button><button class="btn danger" data-x="del">Delete ${plural(list.length, 'item')}</button></div></div>`;
+    dlg.onclick = async e => {
+      const b = e.target.closest('[data-x]');
+      if (!b) return;
+      if (b.dataset.x === 'close') return dlg.close();
+      b.disabled = true;
+      const ok = await guard(async () => {
+        if (b.dataset.x === 'del') {
+          for (const it of list) {
+            for (const p of await DB.byIndex('photos', 'itemId', it.id)) await DB.del('photos', p.id);
+            await commit({ ...it, deleted: true, qty: 0, thumb: '' }, 'DELETE', -(C.num(it.qty) || 0));
+          }
+        } else { S.settings.orphansHidden = true; await saveSettings(); }
+      });
+      if (ok) { dlg.close(); refresh(); toast(b.dataset.x === 'del' ? `Deleted ${plural(list.length, 'item')}.` : 'Hidden.'); }
+    };
+  });
+}
 
 // Removing a location that still holds items: pick where each lot goes. Resolves to { old: new } or null if cancelled.
 function askRehome(gone, keep) {
@@ -886,7 +917,10 @@ function openItem(id, preset) {
     const a = areaOf(v.area);
     if (expanded) preCap();
     if (expanded) placeHint();
-    const types = v.area === 'food' ? s.foodCategories.map(c => ({ id: c, label: c })) : a.types;
+    const powerish = v.area === 'fuel' || v.area === 'power';
+    // Power and fuel share one list; the kind picked decides whether the item is counted in minutes of flame or in watt-hours.
+    const types = v.area === 'food' ? s.foodCategories.map(c => ({ id: c, label: c }))
+      : powerish ? ['fuel', 'power'].flatMap(k => areaOf(k).types.map(t => ({ id: k + ':' + t.id, label: t.id === 'other' ? (k === 'fuel' ? 'Other fuel' : 'Other power') : t.label }))) : a.types;
     const tpl = isNew ? (TEMPLATES[v.area] || []) : [];
     const checks = `<div class="grid2">${N('i-checkm', 'Check or recharge every (months)', v.checkEveryMonths, 'step="1"')}
       <label class="f">Last checked<input id="i-lastc" type="date" value="${esc(v.lastChecked)}"></label></div>`;
@@ -912,7 +946,7 @@ function openItem(id, preset) {
     }
     dlg.innerHTML = `<form class="dlg" id="item-form" novalidate>
       <div class="dlg-head"><h2>${isNew ? (preset && preset._batch ? 'New batch' : 'Add item') : 'Edit item'}</h2><button class="btn small" type="button" data-x="close">Close</button></div>
-      ${SEL('i-area', 'Area', AREAS.map(x => ({ id: x.id, label: x.name })), v.area)}
+      ${SEL('i-area', 'Area', UI_AREAS.map(x => ({ id: x.id, label: x.name })), uiArea(v.area))}
       ${tpl.length ? `<div class="chiprow" role="group" aria-label="Quick fill">${tpl.map((t, i) => `<button class="chip" type="button" data-x="tpl" data-i="${i}">${esc(t.label)}</button>`).join('')}</div>` : ''}
       <fieldset><legend>Photos</legend><div class="photos" id="ph"></div>
         <div class="actions start"><input class="vh" id="i-cam" type="file" accept="image/*" capture="environment">
@@ -922,7 +956,7 @@ function openItem(id, preset) {
         <div id="i-note">${note ? `<div class="banner ${note.cls}"><span>${esc(note.text)}</span></div>` : ''}</div></fieldset>
       ${expanded ? `      <div id="i-match"></div>
       ${F('i-name', 'Name', v.name)}
-      <div class="grid2">${F('i-brand', 'Brand', v.brand)}${types.length > 1 ? SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : v.type) : ''}</div>
+      <div class="grid2">${F('i-brand', 'Brand', v.brand)}${types.length > 1 ? SEL('i-type', v.area === 'food' ? 'Category' : 'Type', types, v.area === 'food' ? v.category : powerish ? v.area + ':' + v.type : v.type) : ''}</div>
       <div class="grid2">${N('i-qty', 'How many you have', v.qty)}${SEL('i-loc', 'Location', s.locations.map(l => ({ id: l, label: l })), v.location)}</div>
       <p class="note sug" id="i-locwhy"${locWhy ? '' : ' hidden'}>${esc(locWhy)}</p>
       <div class="grid2"><label class="f">${v.area === 'medical' ? 'Expiry date' : 'Best before or expiry'}<input id="i-bb" type="date" value="${esc(v.bestBefore)}"></label>
@@ -993,7 +1027,7 @@ function openItem(id, preset) {
     take('bestBefore', 'i-bb'); take('kcal', 'i-kcal'); take('protein', 'i-prot'); take('cap', 'i-cap'); take('perDay', 'i-perday');
     take('checkEveryMonths', 'i-checkm'); take('lastChecked', 'i-lastc'); take('minQty', 'i-min'); take('barcode', 'i-bar'); take('notes', 'i-notes');
     const t = g('i-type');
-    if (t !== undefined) { if (v.area === 'food') v.category = t; else v.type = t; }
+    if (t !== undefined) { if (v.area === 'food') v.category = t; else if (t.includes(':')) [v.area, v.type] = t.split(':'); else v.type = t; }
     const conf = $('#i-conf', dlg); if (conf) v.confirmed = conf.checked;
     const cook = $('#i-cook', dlg); if (cook) v.needsCooking = cook.checked;
     if (dlg.querySelector('[name=i-src]')) { const src = dlg.querySelector('[name=i-src]:checked'); v.source = src ? src.value : ''; }
@@ -1068,7 +1102,7 @@ function openItem(id, preset) {
     if (reading) { readAgain = true; return; }             // a photo was added mid-read: read once more when this one ends
     reading = true; paintPhotos();
     try {
-      const out = await readLabel({ apiKey: S.apiKey, model: s.apiModel, blobs, area: areaTouched ? v.area : null, categories: s.foodCategories, types: Object.fromEntries(AREAS.filter(a => a.types).map(a => [a.id, a.types])) });
+      const out = await readLabel({ apiKey: S.apiKey, model: s.apiModel, blobs, area: areaTouched ? v.area : null, categories: s.foodCategories, types: Object.fromEntries(AREAS.filter(a => a.types && ACTIVE.includes(a.id)).map(a => [a.id, a.types])), areas: ACTIVE });
       collect(); applyRead(out);
     } catch (e) {
       collect();
@@ -1145,7 +1179,12 @@ function openItem(id, preset) {
       if (t.id === 'i-area') { collect(); v.area = t.value; areaTouched = true; v.basis = ''; fixType(); draw(); }
       else if (t.id === 'i-cam' || t.id === 'i-gal') { const files = t.files; addFiles(files).then(() => { t.value = ''; }); }
       else if (t.id === 'i-loc') { locTouched = true; hints(); }
-      else if (['i-type', 'i-cook', 'i-size', 'i-unit', 'i-cap', 'i-kcal', 'i-prot', 'i-qty'].includes(t.id)) hints();
+      else if (t.id === 'i-type') {
+        const before = v.area;
+        collect();
+        if (v.area !== before) { v.cap = ''; v.basis = ''; capAuto = false; capTouched = !isNew; draw(); } else hints();   // fuel and power count differently
+      }
+      else if (['i-cook', 'i-size', 'i-unit', 'i-cap', 'i-kcal', 'i-prot', 'i-qty'].includes(t.id)) hints();
       else if (['c-k', 'c-p', 'c-w'].includes(t.id)) calcLive();
       else if (t.id === 'i-bbm' || t.id === 'i-bby') {
         const m = Number($('#i-bbm', dlg).value), y = Number($('#i-bby', dlg).value);
@@ -1627,6 +1666,7 @@ document.addEventListener('click', async e => {
     case 'scn-new': openScenarioEdit(null); break;
     case 'meals': openMeals(); break;
     case 'advise': openAdvisor(b.dataset.v); break;
+    case 'orphans': openOrphans(); break;
     case 'situation': openSituation(b.dataset.v === 'end' ? 999 : b.dataset.v === 'people' ? 1 : 0); break;
     case 'sync-now': b.disabled = true; if (await syncNow()) toast('Synced.'); else toast(syncText()); render(); break;
     case 'sync-code': S.sync.show = !S.sync.show; render(); break;

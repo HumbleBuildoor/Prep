@@ -4,7 +4,7 @@ import * as C from '../js/calc.js';
 import { DEFAULT_SETTINGS, DEFAULT_SCENARIOS } from '../js/defaults.js';
 
 const TODAY = '2026-11-27';
-const S = { ...DEFAULT_SETTINGS, adults: 2, dogs: 1, cats: 2 };
+const S = { ...DEFAULT_SETTINGS, areas: ['water', 'food', 'fuel', 'power', 'medical', 'hygiene', 'pets'], adults: 2, dogs: 1, cats: 2 };
 const scn = id => DEFAULT_SCENARIOS.find(x => x.id === id);
 const near = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `${a} is not within ${tol} of ${b}`);
 const food = (o) => ({ area: 'food', qty: 1, location: 'Home', category: 'Rice & Grains', source: 'LABEL', ...o });
@@ -262,4 +262,11 @@ test('situation: every question and option id is unique, and flags and summary f
   const own = SIT.summary({ answers: { cash: 'days' }, other: { cash: 'Also some foreign notes', fuelType: 'LPG conversion' } }, []);
   assert.match(own, /A few days, in their own words: Also some foreign notes\./);
   assert.match(own, /What does it run on\? in their own words: LPG conversion\./);
+});
+
+test('areas switched off are not judged: by default no medical or hygiene need appears', () => {
+  const D = { ...DEFAULT_SETTINGS, adults: 2, dogs: 1, cats: 2 };
+  const ids = C.evaluate(scn('all-off'), [{ area: 'medical', name: 'Tablet', qty: 1, cap: 30, perDay: 1, location: 'Home' }], D, TODAY).needs.map(n => n.id);
+  assert.deepEqual(ids, ['water', 'food', 'fuel', 'power', 'pets']);
+  assert.ok(C.evaluate(scn('all-off'), [], S, TODAY).needs.some(n => n.id === 'hygiene'));
 });

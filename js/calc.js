@@ -146,7 +146,7 @@ export function evaluate(scn, items, s, today, labelOf) {
   const needFood = !scn.shops || away;
   const kitchen = !!scn.grid && !away;                 // the normal kitchen works
   const petsIn = pets > 0 && (!away || scn.petsAlong !== false);
-  const needs = [];
+  let needs = [];
 
   const fuel = by('fuel');
   const fuelHave = stock(fuel);
@@ -229,6 +229,8 @@ export function evaluate(scn, items, s, today, labelOf) {
     if (cats > 0) lines.push(line('catfood', 'Cat food', have('catfood'), 'pet-days', cats));
     needs.push(need('pets', 'Pets', lines, target, { logged: p.length > 0 }));
   }
+
+  if (Array.isArray(s.areas)) needs = needs.filter(n => s.areas.includes(n.id));   // areas switched off are not judged
 
   let limiting = null;
   for (const n of needs) if (!limiting || n.days < limiting.days) limiting = n;
