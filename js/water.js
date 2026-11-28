@@ -51,7 +51,7 @@ export function plan(scn, items, s, a, o) {
   // The tap: what the scenario says, then what a power cut does to it in this building.
   const state = tapOf(scn);
   const tap = { state, stopsAfter: null, assumed: false, byPower: false };
-  if (!away && !scn.grid && state !== 'off' && a.tapInCut !== 'yes') {
+  if (!away && !scn.grid && state !== 'off' && a.tapInCut !== 'yes' && !scn.real) {      // scn.real: live, so the tap is as reported
     tap.byPower = true;
     if (a.tapInCut === 'no') tap.stopsAfter = 0;
     else if (a.tapInCut === 'while' && RUN_DAYS[a.tapRun] !== undefined) tap.stopsAfter = RUN_DAYS[a.tapRun];

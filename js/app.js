@@ -9,8 +9,9 @@ import * as SY from './sync.js';
 import * as SIT from './situation.js';
 import * as TD from './todo.js';
 import * as WT from './water.js';
+import * as LV from './live.js';
 
-const APP_VERSION = '1.17.0';
+const APP_VERSION = '1.18.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -42,9 +43,9 @@ function amount(v, unit) {
 
 // ---------- state ----------
 const S = {
-  items: [], events: [], settings: { ...DEFAULT_SETTINGS }, scenarios: DEFAULT_SCENARIOS.map(x => ({ ...x })),
+  items: [], events: [], settings: { ...DEFAULT_SETTINGS }, scenarios: DEFAULT_SCENARIOS.map(x => ({ ...x })), live: null,
   view: 'ready', f: { q: '', area: '', loc: '', st: '', sort: 'due', act: '' },
-  sync: { code: '', since: 0, pushed: new Set(), status: '', error: '', lastAt: '', settingsAt: '', scenariosAt: '', show: false },
+  sync: { code: '', since: 0, pushed: new Set(), status: '', error: '', lastAt: '', settingsAt: '', scenariosAt: '', liveAt: '', show: false },
   apiKey: '', deviceId: '', lastBackupAt: '', persisted: null, installEvt: null, swReg: null, updateReady: false, updateRequested: false, error: '',
 };
 const main = $('#main'), dlg = $('#dlg'), askDlg = $('#ask');
@@ -66,8 +67,9 @@ async function load() {
   S.lastBackupAt = lastBackupAt || '';
   S.deviceId = deviceId || uid();
   if (!deviceId) await DB.put('meta', S.deviceId, 'deviceId');
-  const [code, since, pushed, lastAt, settingsAt, scenariosAt] = await Promise.all(['syncCode', 'syncSince', 'syncPushed', 'syncLastAt', 'settingsAt', 'scenariosAt'].map(k => DB.get('meta', k)));
-  Object.assign(S.sync, { code: code || '', since: Number(since) || 0, pushed: new Set(Array.isArray(pushed) ? pushed : []), lastAt: lastAt || '', settingsAt: settingsAt || '', scenariosAt: scenariosAt || '' });
+  const [code, since, pushed, lastAt, settingsAt, scenariosAt, liveAt, liveRec] = await Promise.all(['syncCode', 'syncSince', 'syncPushed', 'syncLastAt', 'settingsAt', 'scenariosAt', 'liveAt', 'live'].map(k => DB.get('meta', k)));
+  Object.assign(S.sync, { code: code || '', since: Number(since) || 0, pushed: new Set(Array.isArray(pushed) ? pushed : []), lastAt: lastAt || '', settingsAt: settingsAt || '', scenariosAt: scenariosAt || '', liveAt: liveAt || '' });
+  S.live = liveRec && liveRec.id && liveRec.state ? liveRec : null;
 }
 
 function toast(text) {
@@ -120,6 +122,7 @@ async function commit(item, type, delta) {
 
 async function saveSettings() { await DB.put('meta', S.settings, 'settings'); await stampMeta('settings'); }
 async function saveScenarios() { await DB.put('meta', S.scenarios, 'scenarios'); await stampMeta('scenarios'); }
+async function saveLive() { await DB.put('meta', S.live, 'live'); await stampMeta('live'); }
 // Settings and scenarios carry the time they last changed, so the newest version wins when devices sync.
 async function stampMeta(k) { S.sync[k + 'At'] = nowISO(); await DB.put('meta', S.sync[k + 'At'], k + 'At'); scheduleSync(); }
 
@@ -145,15 +148,15 @@ function localRecords() {
   const out = [], done = S.sync.pushed;
   for (const e of S.events) if (!done.has(e.id)) out.push({ id: e.id, rec: { t: 'event', v: e } });
   for (const it of S.items) { const id = it.id + ':' + (it.updatedAt || ''); if (!done.has(id)) out.push({ id, rec: { t: 'item', v: it } }); }
-  for (const k of ['settings', 'scenarios']) {
+  for (const k of ['settings', 'scenarios', 'live']) {
     const at = S.sync[k + 'At'];
-    if (at && !done.has(k + ':' + at)) out.push({ id: k + ':' + at, rec: { t: 'meta', k, at, v: S[k] } });
+    if (at && S[k] && !done.has(k + ':' + at)) out.push({ id: k + ':' + at, rec: { t: 'meta', k, at, v: S[k] } });
   }
   return out;
 }
 async function applyIncoming(incoming) {
   const y = S.sync;
-  const m = SY.merge({ items: S.items, events: S.events, meta: { settings: { at: y.settingsAt }, scenarios: { at: y.scenariosAt } } }, incoming);
+  const m = SY.merge({ items: S.items, events: S.events, meta: { settings: { at: y.settingsAt }, scenarios: { at: y.scenariosAt }, live: { at: y.liveAt } } }, incoming);
   await DB.putAll(m.events.map(e => ['events', e]).concat(m.items.map(i => ['items', i])));
   for (const it of m.items) { const i = S.items.findIndex(x => x.id === it.id); if (i >= 0) S.items[i] = it; else S.items.push(it); }
   if (m.events.length) S.events = S.events.concat(m.events).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
@@ -164,6 +167,14 @@ async function applyIncoming(incoming) {
   if (m.meta.scenarios && Array.isArray(m.meta.scenarios.v)) {
     S.scenarios = m.meta.scenarios.v.filter(x => x && typeof x.id === 'string' && typeof x.name === 'string'); y.scenariosAt = m.meta.scenarios.at;
     await DB.put('meta', S.scenarios, 'scenarios'); await DB.put('meta', y.scenariosAt, 'scenariosAt');
+  }
+  if (m.meta.live && m.meta.live.v && m.meta.live.v.id && m.meta.live.v.state) {
+    // The live record is merged part by part, so a tick on this device and a switch on another both survive.
+    const merged = LV.merge(S.live, m.meta.live.v);
+    S.live = merged;
+    await DB.put('meta', S.live, 'live');
+    if (LV.same(merged, m.meta.live.v)) { y.liveAt = m.meta.live.at; await DB.put('meta', y.liveAt, 'liveAt'); }
+    else await stampMeta('live');                         // this device knew something the other did not: send the merged record back
   }
   return m.items.length + m.events.length + Object.keys(m.meta).length;
 }
@@ -199,7 +210,11 @@ async function syncOnce(opts) {
         try { incoming.push(await SY.unseal(k.key, c.id, c.body)); } catch (e) { /* not ours or damaged: leave it */ }
         y.pushed.add(c.id);
       }
-      if (incoming.length) changed += await applyIncoming(incoming);
+      if (incoming.length) {
+        changed += await applyIncoming(incoming);
+        // Merging can leave this device holding something newer than what it received (a live record with ticks from both sides): send it in this same exchange.
+        for (const x of localRecords()) if (!queue.some(q => q.id === x.id)) queue.push(x);
+      }
       y.since = Number(res.cursor) || y.since; more = !!res.more;
       await DB.put('meta', y.since, 'syncSince'); await DB.put('meta', [...y.pushed], 'syncPushed');
     } while ((queue.length || more) && ++rounds < 1000);
@@ -219,8 +234,8 @@ async function syncEnable(code, create) {
   const y = S.sync;
   Object.assign(y, { code, since: 0, pushed: new Set(), status: '', error: '', lastAt: '', show: create });
   SYNC.keys = null;
-  if (create) { for (const k of ['settings', 'scenarios']) if (!y[k + 'At']) { y[k + 'At'] = nowISO(); await DB.put('meta', y[k + 'At'], k + 'At'); } }
-  else { y.settingsAt = ''; y.scenariosAt = ''; await DB.put('meta', '', 'settingsAt'); await DB.put('meta', '', 'scenariosAt'); }   // joining: the household's settings win
+  if (create) { for (const k of ['settings', 'scenarios', 'live']) if (!y[k + 'At'] && S[k]) { y[k + 'At'] = nowISO(); await DB.put('meta', y[k + 'At'], k + 'At'); } }
+  else { y.settingsAt = ''; y.scenariosAt = ''; y.liveAt = ''; for (const k of ['settingsAt', 'scenariosAt', 'liveAt']) await DB.put('meta', '', k); }   // joining: the household's settings win
   await DB.put('meta', code, 'syncCode'); await DB.put('meta', 0, 'syncSince'); await DB.put('meta', [], 'syncPushed');
   render();
   const ok = await syncNow({ create });
@@ -430,6 +445,7 @@ function viewReady() {
       <div class="hero-text"><div class="eyebrow">Scenarios covered</div>
         <div class="hero-line">${weak ? `Weakest: <b>${esc(weak.scn.name)}</b>, ${weak.v.days === null ? 'nothing logged' : `${fmtDays(weak.v.days)} of ${plural(weak.scn.days, 'day')}`}` : 'Everything you have logged covers every scenario.'}</div>
         <div class="hero-sub">${esc(hh)}</div></div></section>`;
+  if (items.length) h += '<button class="livelink" data-act="live-go">Something is happening now<small>Start Live mode</small></button>';
   const m = todoModel(), nx = TD.next([m.gaps, m.now, m.finds, m.flags], 3), count = m.gaps.length + m.now.length + m.finds.length + m.flags.length;
   if (nx.length && items.length) {
     h += `<div class="card nextcard"><div class="askrow"><h2>Next</h2>${count > nx.length ? `<a class="state" href="#todo">All ${count} to do</a>` : ''}</div><ul class="rows">${nx.map(x => todoRow(x)).join('')}</ul></div>`;
@@ -557,8 +573,13 @@ function viewTodo() {
   // Long groups show their first few rows, with the rest one tap away.
   const list = (title, arr, note, show = 5) => sect(title, arr.slice(0, show).map(x => todoRow(x)), note, arr.length) +
     (arr.length > show ? `<details class="more"><summary>Show all ${arr.length}</summary><ul class="rows">${arr.slice(show).map(x => todoRow(x)).join('')}</ul></details>` : '');
-  const any = m.now.length + m.gaps.length + m.finds.length + m.flags.length + d.d30.length + d.first.length + d.soon.length + d.later.length + m.off.length;
-  return list('Now', m.now, '', 99) +
+  const af = s.after;
+  const after = af ? `<div class="card after"><h2>After: ${esc(af.name)}</h2><p class="note">${plural(af.days || 1, 'day')}, ended ${esc(stamp(af.endedAt))}.</p>
+      ${af.used && af.used.length ? `<h3>Restock what was used</h3><ul class="plain">${af.used.map(usedLine).join('')}</ul>` : ''}
+      ${af.note ? `<h3>For next time</h3><p>${esc(af.note)}</p>` : ''}
+      <div class="actions start"><button class="btn small" data-act="after-clear">Done, clear this</button></div></div>` : '';
+  const any = m.now.length + m.gaps.length + m.finds.length + m.flags.length + d.d30.length + d.first.length + d.soon.length + d.later.length + m.off.length + (af ? 1 : 0);
+  return after + list('Now', m.now, '', 99) +
     list('Stock up', m.gaps, 'What to add so every scenario is covered. Drinking water first, then whatever runs out soonest.') +
     list('Find out', m.finds, 'Until these are known, the app cannot count them.') +
     list('Worth fixing', m.flags, 'From your answers about your household and situation.') +
@@ -574,6 +595,189 @@ async function todoOff(key, value) {
   if (value) off[key] = value; else delete off[key];
   s.todo = { ...(s.todo || {}), off };
   if (await guard(saveSettings)) refresh();
+}
+
+// ---------- live mode ----------
+// Prep mode is for getting ready. Live mode is for getting through something that is happening now:
+// the same supplies and the same calculation, fed with what is really working.
+const isLive = () => !!(S.live && S.live.on);
+const wday = d => { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).toLocaleDateString('en-MY', { weekday: 'short', day: 'numeric', month: 'short' }); };
+const stamp = iso => new Date(iso).toLocaleString('en-MY', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+
+function liveCtx() {
+  const lv = S.live, s = S.settings, t = today(), sit = s.situation || {}, answers = sit.answers || {};
+  const scn = LV.scenario(lv, t);
+  // While live, only water that has actually been captured counts: the heater's water is added when its step is ticked.
+  const r = C.evaluate(scn, live(), { ...s, situation: { ...sit, answers: { ...answers, heaterL: 0 } } }, t, typeLabel);
+  const wn = r.needs.find(n => n.id === 'water'), p = wn ? wn.info : null, left = LV.daysLeft(lv, t);
+  const steps = LV.steps(lv, { answers, water: p, left }), isDone = k => !!(lv.done[k] && lv.done[k].on);
+  return { lv, scn, r, p, left, answers, day: LV.dayNumber(lv, t), usedToday: !!(lv.used && lv.used[t]),
+    todo: steps.filter(x => !isDone(x.key)), done: steps.filter(x => isDone(x.key)) };
+}
+
+function viewNow() {
+  const c = liveCtx(), { lv, r, p } = c, s = S.settings, t = today(), want = Math.max(1, c.left);
+  const alertDays = C.num(s.waterAlertDays) ?? 2;
+  let h = '';
+  if (p && p.needed && p.drinkDays < alertDays) {
+    h += `<div class="alert"><b>Under ${plural(alertDays, 'day')} of drinking water.</b> ${lv.state.shops ? 'Shops are open: buy water today.' : 'Get more today, or go somewhere that has water.'}${p.stock.reserve > 0 ? ` The ${n1(p.stock.reserve)} L held back is for leaving with.` : ''}</div>`;
+  }
+  // How long each need lasts from here. Water counts from tomorrow once today's has been logged as used.
+  const row = (area, label, days, logged, fromTomorrow) => {
+    const cls = !logged ? 'none' : days >= want ? 'ok' : days >= want / 2 ? 'short' : 'bad';
+    const when = !logged ? 'nothing logged' : days === Infinity ? 'does not run out' : days < 1 ? (fromTomorrow ? 'runs out tomorrow' : 'runs out today') : 'until ' + wday(TD.dayAfter(t, Math.floor(days) + (fromTomorrow ? 1 : 0)));
+    return `<li class="last l-${cls}"><span class="thumb sm a-${esc(area)}">${areaIcon(area)}</span><span class="row-text"><span class="nm">${esc(label)}</span><span class="mt">${esc(when)}</span></span>
+      <span class="last-n">${!logged || days === Infinity ? '' : `<b>${fmtDays(days)}</b><small>${days === 1 ? 'day' : 'days'}</small>`}</span></li>`;
+  };
+  const rows = [];
+  for (const n of r.needs) {
+    if (n.id === 'water') for (const l of n.lines) rows.push(row('water', l.label, l.days, n.logged, c.usedToday));
+    else rows.push(row(n.id, n.name, n.days, n.logged, false));
+  }
+  h += `<h2 class="sect">How long it lasts</h2>` + (rows.length ? `<ul class="lasts">${rows.join('')}</ul>
+      <p class="note">${c.left > 0 ? `Measured against the ${plural(c.left, 'day')} still expected.` : 'It has gone past the days you expected.'} Change what is working, or the days, on State.</p>`
+    : '<p class="note">With tap water, power and shops all working, nothing is being used up. If that changes, say so on State.</p>');
+
+  const step = (x, undo) => `<li class="row todo s-plain"><div class="row-main"><span class="row-text"><span class="nm">${esc(x.text)}</span>${x.detail ? `<span class="mt">${esc(x.detail)}</span>` : ''}</span></div>
+      ${undo ? `<button class="qty" data-act="live-undo" data-k="${esc(x.key)}"><b>↩</b><small>undo</small></button>` : `<button class="qty tick" data-act="live-step" data-k="${esc(x.key)}"><b>✓</b><small>done</small></button>`}</li>`;
+  if (c.todo.length) h += `<h2 class="sect">Do now (${c.todo.length})</h2><ul class="rows">${c.todo.map(x => step(x)).join('')}</ul>`;
+
+  h += `<h2 class="sect">Today · day ${c.day}</h2><div class="card">`;
+  if (!p || !p.needed) h += '<p class="note">Water comes from the tap. There is nothing to log.</p>';
+  else {
+    h += `<p><b>${n1(p.D)} L</b> to drink${p.washCounted ? ` and <b>${n1(p.W)} L</b> to wash and cook` : ''}, for ${[plural(s.adults, 'person'), (C.num(s.dogs) || 0) + (C.num(s.cats) || 0) ? plural((C.num(s.dogs) || 0) + (C.num(s.cats) || 0), 'pet') : ''].filter(Boolean).join(' and ')}.</p>` +
+      (c.usedToday ? '<p class="note">Today’s water is logged as used. The figures above count from tomorrow.</p>'
+        : '<div class="actions start"><button class="btn primary" data-act="live-use">Log today’s water as used</button></div>');
+  }
+  if (r.needs.some(n => n.id === 'food')) h += '<div class="actions start"><button class="btn" data-act="meals">Plan today’s meals</button></div>';
+  h += '</div>';
+  if (c.done.length) h += `<details class="fold"><summary>Done (${c.done.length})</summary><ul class="rows">${c.done.map(x => step(x, true)).join('')}</ul></details>`;
+  return h;
+}
+
+function viewState() {
+  const lv = S.live, s = S.settings, st = lv.state, pos = WT.postureOf(s);
+  const seg = (k, opts) => `<div class="seg" role="group">${opts.map(o => `<button data-act="live-set" data-k="${k}" data-v="${o[0]}" aria-pressed="${String(st[k]) === String(o[0])}">${o[1]}</button>`).join('')}</div>`;
+  const line = (label, k, opts) => `<div class="stline"><div class="st-h"><b>${label}</b><small>since ${esc(stamp(lv.since[k] || lv.startedAt))}</small></div>${seg(k, opts)}</div>`;
+  return `<div class="card"><h2>What is working right now</h2><p class="note">Change one and every figure on Now is worked out again${S.sync.code ? ', on every device' : ''}.</p>
+      ${line('Tap water', 'tap', [['on', 'Works'], ['unsafe', 'Unsafe'], ['off', 'Off']])}
+      ${line('Mains power', 'grid', [['true', 'On'], ['false', 'Off']])}
+      ${line('Shops', 'shops', [['true', 'Open'], ['false', 'Closed']])}</div>
+    <div class="card"><h2>How long you expect it to last</h2>
+      <div class="numrow"><input id="lv-days" type="number" inputmode="numeric" min="1" step="1" value="${esc(val(lv.days))}" aria-label="Days expected"><span>days from ${esc(wday(lv.startDay))}, when it started</span></div></div>
+    <div class="card"><h2>How far you cut back</h2><div class="posture"><div class="seg" role="group">${WT.POSTURES.map(p =>
+      `<button data-act="posture" data-v="${p[0]}" aria-pressed="${pos === p[0]}">${p[1]}</button>`).join('')}</div>
+      <p class="note">A person a day: ${n0(C.kcalFor({}, s))} kcal, ${n1(st.grid ? s.drinkL ?? 3 : s.drinkHotL ?? 4)} L to drink, ${n1(WT.washLitres(s))} L to wash and cook.</p></div></div>
+    <div class="card"><h2>When it is over</h2><p class="note">Ending Live mode takes every device back to Prep mode and lists what was used, so you can restock.</p>
+      <div class="actions start"><button class="btn danger" data-act="live-end">End Live mode</button><a class="btn" href="#more">Settings</a></div></div>`;
+}
+
+// Water counted by the litre: what was filled during the event.
+async function addLitres(type, name, litres, location) {
+  const now = nowISO(), tdy = today();
+  const cur = live().find(i => i.area === 'water' && i.type === type && i.name === name && i.location === location && C.num(i.cap) === 1);
+  if (cur) return commit({ ...cur, qty: round3((C.num(cur.qty) || 0) + litres), lastChecked: type === 'filled' ? tdy : cur.lastChecked }, 'RESTOCK', litres);
+  return commit({ id: uid(), area: 'water', type, category: '', name, brand: '', location, qty: round3(litres), confirmed: true, countedAt: tdy, unitSize: 1000, unit: 'ml', bestBefore: '',
+    kcal: null, protein: null, source: '', basis: 'Counted by the litre.', needsCooking: false, cap: 1, perDay: null, checkEveryMonths: type === 'filled' ? 6 : null, lastChecked: type === 'filled' ? tdy : '',
+    minQty: null, barcode: '', notes: '', thumb: '', createdAt: now }, 'ADD', litres);
+}
+const homeLoc = () => { const k = (S.settings.situation || {}).kinds || {}; return S.settings.locations.find(l => k[l] === 'home') || S.settings.locations[0] || ''; };
+async function tickStep(key, on) { S.live.done = { ...S.live.done, [key]: { at: nowISO(), on, by: S.deviceId } }; await saveLive(); }
+
+async function startLive(scn) {
+  const others = S.sync.code ? ' Every device that syncs with this one switches too.' : '';
+  if (!(await ask(`Start Live mode${scn ? ` for "${scn.name}"` : ''}? Use it when this is really happening.${others} Your supplies are not changed.`, 'Start Live mode', false))) return false;
+  S.live = LV.start(scn, uid(), nowISO(), today(), S.deviceId);
+  if (!(await guard(saveLive))) return false;
+  if (dlg.open) dlg.close();
+  location.hash = '#now'; route(); renderBanner();
+  return true;
+}
+
+const usedLine = u => `<li>${esc(u.name)}: <b>${u.litres ? esc(n1(u.litres)) + ' L' : '× ' + esc(n1(u.qty))}</b></li>`;
+
+// Ending: what was used since the start becomes a restock list in To do.
+function openEndLive() {
+  const lv = S.live, used = new Map();
+  for (const e of S.events) {
+    if (e.type !== 'USE' || !(String(e.at) >= String(lv.startedAt))) continue;
+    const it = S.items.find(i => i.id === e.itemId), u = used.get(e.itemId) || { name: e.item, area: it ? it.area : '', qty: 0, litres: 0 };
+    u.qty = round3(u.qty - (C.num(e.delta) || 0));
+    if (it && it.area === 'water') u.litres = round3(u.qty * (C.num(it.cap) || 0));
+    used.set(e.itemId, u);
+  }
+  const list = [...used.values()].filter(u => u.qty > 0);
+  openDlg(() => {
+    dlg.innerHTML = `<form class="dlg" id="end-form"><div class="dlg-head"><h2>End Live mode</h2><button class="btn small" type="button" data-x="close">Close</button></div>
+      <p class="note">${esc(lv.name)}, ${plural(LV.dayNumber(lv, today()), 'day')}, started ${esc(stamp(lv.startedAt))}.${S.sync.code ? ' This takes every device back to Prep mode.' : ''}</p>
+      ${list.length ? `<h3>Used since it started</h3><ul class="plain">${list.map(usedLine).join('')}</ul><p class="note">This goes to To do as a restock list.</p>` : '<p class="note">Nothing was logged as used.</p>'}
+      <label class="f">What would you do differently next time? (optional)<textarea id="end-note" rows="3" maxlength="600"></textarea></label>
+      <div class="dlg-foot"><button class="btn small" type="button" data-x="close">Not yet</button><button class="btn danger grow" type="submit">End Live mode</button></div></form>`;
+    dlg.onclick = e => { if (e.target.closest('[data-x="close"]')) dlg.close(); };
+    dlg.onsubmit = async e => {
+      e.preventDefault();
+      const note = $('#end-note', dlg).value.trim().slice(0, 600), now = nowISO();
+      const ok = await guard(async () => {
+        S.live = { ...S.live, on: false, endedAt: now };
+        await saveLive();
+        if (list.length || note) { S.settings.after = { name: lv.name, startedAt: lv.startedAt, endedAt: now, days: LV.dayNumber(lv, today()), used: list, note }; await saveSettings(); }
+      });
+      if (!ok) return;
+      dlg.close(); location.hash = list.length || note ? '#todo' : '#ready'; route(); renderBanner(); toast('Live mode has ended.');
+    };
+  });
+}
+
+// One tap for the day's water: the plan is filled in, every amount can be changed.
+function openUseDay() {
+  const c = liveCtx(), p = c.p, t = today();
+  if (!p || !p.needed) return;
+  const plan = LV.dayWater(live().filter(i => i.area === 'water'), p, c.lv.state.tap);
+  openDlg(() => {
+    const short = [plan.drinkShort > 0.05 ? `${n1(plan.drinkShort)} L of drinking water` : '', plan.washShort > 0.05 ? `${n1(plan.washShort)} L of washing water` : ''].filter(Boolean).join(' and ');
+    dlg.innerHTML = `<form class="dlg" id="use-form"><div class="dlg-head"><h2>Today’s water</h2><button class="btn small" type="button" data-x="close">Close</button></div>
+      <p class="note">${n1(p.D)} L to drink${p.washCounted ? ` and ${n1(p.W)} L to wash and cook` : ''}. Water you filled is used before sealed bottles. Change any amount to what was really used.</p>
+      ${plan.lines.length ? plan.lines.map((l, i) => `<label class="f">${esc(l.name)} <small>${l.use === 'drink' ? 'to drink' : 'to wash'}</small><span class="numrow"><input type="number" inputmode="decimal" min="0" step="any" data-line="${i}" value="${esc(n1(l.litres))}"><span>L</span></span></label>`).join('') : '<p class="note">There is no stored water in reach to log.</p>'}
+      ${short ? `<div class="banner bad"><span>Short today by ${esc(short)}.${c.lv.state.tap === 'unsafe' ? ' Boil or treat tap water to make up the drinking water.' : ''}</span></div>` : ''}
+      <div class="dlg-foot"><button class="btn small" type="button" data-x="close">Cancel</button><button class="btn primary grow" type="submit">Log as used</button></div></form>`;
+    dlg.onclick = e => { if (e.target.closest('[data-x="close"]')) dlg.close(); };
+    dlg.onsubmit = async e => {
+      e.preventDefault();
+      const ok = await guard(async () => {
+        for (const [i, l] of plan.lines.entries()) {
+          const it = S.items.find(x => x.id === l.id), litres = Math.max(0, C.num(dlg.querySelector(`[data-line="${i}"]`).value) || 0);
+          if (!it || !litres) continue;
+          const units = Math.min(C.num(it.qty) || 0, round3(litres / (C.num(it.cap) || 1)));
+          if (units > 0) await commit({ ...it, qty: round3((C.num(it.qty) || 0) - units) }, 'USE', -units);
+        }
+        S.live.used = { ...S.live.used, [t]: nowISO() };
+        await saveLive();
+      });
+      if (ok) { dlg.close(); refresh(); toast('Logged. Tomorrow starts from what is left.'); }
+    };
+  });
+}
+
+// Filling containers when the event starts: what was filled becomes stock.
+function openFill() {
+  const a = (S.settings.situation || {}).answers || {};
+  openDlg(() => {
+    dlg.innerHTML = `<form class="dlg" id="fill-form"><div class="dlg-head"><h2>What did you fill?</h2><button class="btn small" type="button" data-x="close">Close</button></div>
+      <p class="note">Enter the litres. They are added to your water, kept at ${esc(homeLoc())}. Enter 0 for what you did not fill.</p>
+      <label class="f">Drinking water, in clean containers<span class="numrow"><input id="fl-drink" type="number" inputmode="decimal" min="0" step="any" value="${esc(val(C.num(a.containersL) || ''))}"><span>L</span></span></label>
+      <label class="f">Washing water, in the tub or buckets<span class="numrow"><input id="fl-wash" type="number" inputmode="decimal" min="0" step="any" value="${esc(val(C.num(a.tubL) || ''))}"><span>L</span></span></label>
+      <div class="dlg-foot"><button class="btn small" type="button" data-x="none">Could not fill any</button><button class="btn primary grow" type="submit">Add to my water</button></div></form>`;
+    const finish = async (d, w) => {
+      const ok = await guard(async () => {
+        if (d > 0) await addLitres('filled', 'Filled containers', d, homeLoc());
+        if (w > 0) await addLitres('washing', 'Filled tub and buckets', w, homeLoc());
+        await tickStep('fill', true);
+      });
+      if (ok) { dlg.close(); refresh(); toast(d + w > 0 ? `Added ${n1(d + w)} L.` : 'Noted.'); }
+    };
+    dlg.onclick = e => { if (e.target.closest('[data-x="close"]')) dlg.close(); else if (e.target.closest('[data-x="none"]')) finish(0, 0); };
+    dlg.onsubmit = e => { e.preventDefault(); finish(Math.max(0, C.num($('#fl-drink', dlg).value) || 0), Math.max(0, C.num($('#fl-wash', dlg).value) || 0)); };
+  });
 }
 
 // ---------- view: Log ----------
@@ -601,7 +805,7 @@ const FIGS = {
   's-ksurv': { def: 1600 }, 's-kstd': { def: 2100 }, 's-kact': { def: 2700 }, 's-prot': { def: 60 },
   's-drink': { def: 3, floor: 2.5, why: 'Under 2.5 L. Sphere gives 2.5 to 3 L as the least for drinking and food.' }, 's-drinkhot': { def: 4 },
   's-wbare': { def: 2, floor: 2, why: 'Under 2 L. Sphere gives 2 L as the least for basic hygiene.' }, 's-wbasic': { def: 5 }, 's-wcomf': { def: 12 },
-  's-petw': { def: 0.3 }, 's-reserve': { def: 1 }, 's-flame': { def: 30 }, 's-power': { def: 50 },
+  's-petw': { def: 0.3 }, 's-reserve': { def: 1 }, 's-walert': { def: 2 }, 's-flame': { def: 30 }, 's-power': { def: 50 },
   's-oil': { def: 10 }, 's-sweet': { def: 0 }, 's-eat': { def: 90 }, 's-soon': { def: 180 }, 's-bagg': { def: 500 }, 's-bagl': { def: 1.5 }, 's-bagk': { def: 300 },
 };
 function figNote(id, value) {
@@ -635,7 +839,8 @@ function viewMore() {
       <h3>Water to wash and cook, litres per person a day</h3><div class="grid3">
         ${N('s-wbare', 'Bare minimum', s.washBareL ?? 2)}${N('s-wbasic', 'Basic', s.washBasicL ?? 5)}${N('s-wcomf', 'Comfortable', s.washComfortL ?? 12)}</div>
       <h3>Other water figures</h3><div class="grid2">
-        ${N('s-petw', 'Water per pet, L a day', s.petWaterEach)}${N('s-reserve', 'Sealed water held back, days', s.reserveDays ?? 1)}</div>
+        ${N('s-petw', 'Water per pet, L a day', s.petWaterEach)}${N('s-reserve', 'Sealed water held back, days', s.reserveDays ?? 1)}
+        ${N('s-walert', 'In Live mode, warn when drinking water is under, days', s.waterAlertDays ?? 2)}</div>
       <h3>Fuel and power, a day</h3><div class="grid2">
         ${N('s-flame', 'Cooking flame, min', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh', s.powerWhPerDay, 1)}</div>
       <h3>What counts</h3><div class="grid2">
@@ -683,9 +888,27 @@ function viewMore() {
       <div class="actions">${S.installEvt ? '<button class="btn primary small" data-act="install">Install</button>' : ''}<button class="btn small" data-act="update">Check for update</button></div></div></div>`;
 }
 
-const VIEWS = { ready: viewReady, supplies: viewSupplies, todo: viewTodo, log: viewLog, more: viewMore };
+const VIEWS = { ready: viewReady, supplies: viewSupplies, todo: viewTodo, log: viewLog, more: viewMore, now: viewNow, state: viewState };
+const NAV_ICON = {
+  ready: '<path d="M12 3 5 6v6c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  supplies: '<path d="M3.5 8 12 3.5 20.5 8v8L12 20.5 3.5 16z"/><path d="M3.5 8 12 12.5 20.5 8M12 12.5v8"/>',
+  todo: '<path d="m4 6.500 1.500 1.500L8 5.500M4 12.500l1.500 1.500L8 11.500M4 18.500l1.500 1.500L8 17.500M11.500 7H20M11.500 13H20M11.500 19H20"/>',
+  log: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+  more: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  now: '<circle cx="12" cy="12" r="8.500"/><path d="M12 7.500V12l3 2"/>',
+  state: '<path d="M5 6h8M17 6h2M5 12h2M11 12h8M5 18h10M19 18h0"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+};
+// The tabs of each mode. Live mode has no Ready or To do: its home is Now.
+const TABS = { prep: [['ready', 'Ready'], ['supplies', 'Supplies'], ['todo', 'To do'], ['log', 'Log'], ['more', 'More']], live: [['now', 'Now'], ['state', 'State'], ['supplies', 'Supplies'], ['log', 'Log']] };
+const PREP_ONLY = ['ready', 'todo'], LIVE_ONLY = ['now', 'state'];
 
 function render() {
+  // A view that belongs to the other mode gives way to this mode's home, for example when another device starts or ends Live mode.
+  const mode = isLive() ? 'live' : 'prep';
+  if ((mode === 'live' ? PREP_ONLY : LIVE_ONLY).includes(S.view)) S.view = mode === 'live' ? 'now' : 'ready';
+  document.body.classList.toggle('live', mode === 'live');
+  const nav = $('#nav');
+  if (nav.dataset.mode !== mode) { nav.dataset.mode = mode; nav.innerHTML = TABS[mode].map(([k, label]) => `<a href="#${k}">${svg(NAV_ICON[k])}<span>${label}</span></a>`).join(''); }
   const a = document.activeElement, id = a && main.contains(a) ? a.id : '';
   let pos = null;
   try { pos = a.selectionStart; } catch (e) { /* not a text field */ }
@@ -705,19 +928,20 @@ function render() {
 function renderBanner() {
   const b = $('#banner');
   let h = '';
+  if (isLive()) h += `<a class="liveband" href="#now"><b>LIVE</b><span>${esc(S.live.name)} · day ${LV.dayNumber(S.live, today())}</span></a>`;
   if (S.updateReady) h += '<div class="banner info"><span>A new version is ready.</span><button class="btn small" data-act="apply-update">Update now</button></div>';
   const days = S.lastBackupAt ? C.daysLeft(today(), S.lastBackupAt.slice(0, 10)) : null;
-  if (live().length >= 5 && (days === null || days > 30)) {
+  if (!isLive() && live().length >= 5 && (days === null || days > 30)) {
     h += `<a class="backupnote" href="#more">${days === null ? 'No backup yet' : `Last backup ${days} days ago`} · back up</a>`;
   }
   const gone = orphans();
-  if (gone.length && !S.settings.orphansHidden) h += `<div class="banner info"><span>${plural(gone.length, 'item')} are in areas the app no longer uses.</span><button class="btn small" data-act="orphans">Review</button></div>`;
+  if (!isLive() && gone.length && !S.settings.orphansHidden) h += `<div class="banner info"><span>${plural(gone.length, 'item')} are in areas the app no longer uses.</span><button class="btn small" data-act="orphans">Review</button></div>`;
   b.innerHTML = h;
 }
 
 function route() {
   const h = (location.hash || '').slice(1);
-  S.view = VIEWS[h] ? h : h === 'due' ? 'todo' : 'ready';      // #due is the old name of the To do tab
+  S.view = VIEWS[h] ? h : h === 'due' ? 'todo' : isLive() ? 'now' : 'ready';      // #due is the old name of the To do tab
   render();
   main.scrollTop = 0;
 }
@@ -1386,6 +1610,8 @@ function openScenario(id) {
   const cmp = [['water', 'water', 'Drinking water'], ['water', 'wash', 'Washing water'], ['food', 'kcal', 'Food']]
     .map(([nid, key, label]) => ({ label, days: byPos.map(res => { const l = lineOf(res, nid, key); return l ? l.days : null; }) }))
     .filter(row => row.days.some(d => d !== null) && new Set(row.days.map(d => (d === null ? '' : dd(d)))).size > 1);
+  // The same list Live mode would open with, so a scenario can be walked through before it happens.
+  const rehearsal = away ? [] : LV.steps(LV.start(scn, 'rehearsal', nowISO(), today(), ''), { answers: (s.situation || {}).answers || {}, water: wn ? wn.info : null, left: scn.days });
   const compare = cmp.length ? `<details class="more"><summary>Compare the three levels</summary><table class="cmp"><tr><th></th>${WT.POSTURES.map(p => `<th${p[0] === pos ? ' class="cur"' : ''}>${p[1]}</th>`).join('')}</tr>
     ${cmp.map(row => `<tr><td>${row.label}</td>${row.days.map((d, i) => `<td${WT.POSTURES[i][0] === pos ? ' class="cur"' : ''}>${d === null ? '–' : d === Infinity ? 'covered' : fmtDays(d)}</td>`).join('')}</tr>`).join('')}</table>
     <p class="note">Days each lasts in this scenario. Change your level on the Ready screen.</p></details>` : '';
@@ -1394,11 +1620,15 @@ function openScenario(id) {
       <div class="conds">${cond}</div>${where ? `<p class="note">${esc(where)}</p>` : ''}
       ${r.needs.length ? rows : '<p class="note">With water, power and shops all working, nothing needs stocking.</p>'}
       ${notes.map(t => `<p class="note">${esc(t)}</p>`).join('')}${compare}
-      <div class="actions"><button class="btn" data-x="edit">Edit scenario</button></div></div>`;
+      ${rehearsal.length ? `<details class="more"><summary>What you would do, in order (${rehearsal.length})</summary><ol class="steps">${rehearsal.map(x => `<li><b>${esc(x.text)}</b>${x.detail ? `<span>${esc(x.detail)}</span>` : ''}</li>`).join('')}</ol></details>` : ''}
+      <div class="actions">${away || isLive() ? '' : '<button class="btn primary" data-x="live">Start for real</button>'}<button class="btn" data-x="edit">Edit scenario</button></div>
+      ${away ? '<p class="note">Live mode covers staying at home for now.</p>' : ''}</div>`;
     dlg.onclick = e => {
       const b = e.target.closest('[data-x]');
       if (!b) return;
-      if (b.dataset.x === 'close') dlg.close(); else { dlg.close(); openScenarioEdit(id); }
+      if (b.dataset.x === 'close') dlg.close();
+      else if (b.dataset.x === 'live') startLive(scn);
+      else { dlg.close(); openScenarioEdit(id); }
     };
   });
 }
@@ -1815,6 +2045,34 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'todo-back': await todoOff(b.dataset.k, ''); break;
+    case 'live-go': {
+      const home = S.scenarios.filter(x => x.place !== 'away');
+      const v = await choose('What is happening? Pick the closest. You can change what is working once it has started.', home.map(x => [x.id, x.name]).concat([['other', 'Something else']]));
+      if (v) await startLive(v === 'other' ? null : S.scenarios.find(x => x.id === v));
+      break;
+    }
+    case 'live-set': {
+      const k = b.dataset.k, v = k === 'tap' ? b.dataset.v : b.dataset.v === 'true';
+      if (S.live.state[k] === v) break;
+      S.live = { ...S.live, state: { ...S.live.state, [k]: v }, since: { ...S.live.since, [k]: nowISO() } };
+      await guard(saveLive); refresh(); break;
+    }
+    case 'live-step': {
+      const st = liveCtx().todo.find(x => x.key === b.dataset.k);
+      if (!st) break;
+      if (st.act === 'fill') { openFill(); break; }
+      await guard(async () => {
+        // The heater's water only counts once it has been drained into containers, which is what ticking this says.
+        const hl = C.num(((S.settings.situation || {}).answers || {}).heaterL) || 0;
+        if (st.key === 'heater' && hl > 0) await addLitres('filled', 'Water from the heater', hl, homeLoc());
+        await tickStep(st.key, true);
+      });
+      refresh(); break;
+    }
+    case 'live-undo': await guard(() => tickStep(b.dataset.k, false)); refresh(); break;
+    case 'live-use': openUseDay(); break;
+    case 'live-end': openEndLive(); break;
+    case 'after-clear': delete S.settings.after; await guard(saveSettings); refresh(); break;
     case 'fig-reset': { const box = $('#' + id); if (box) { box.value = String(FIGS[id].def); b.closest('[data-fig]').innerHTML = figNote(id, box.value) + ' Tap Save to keep it.'; } break; }
     case 'scn': openScenario(id); break;
     case 'scn-new': openScenarioEdit(null); break;
@@ -1889,6 +2147,11 @@ main.addEventListener('change', e => {
   const f = e.target.dataset.f;
   if (f && f !== 'q') { S.f[f] = e.target.value; render(); return; }
   if (e.target.id === 'b-file' && e.target.files && e.target.files[0]) { const file = e.target.files[0]; e.target.value = ''; importBackup(file); }
+  if (e.target.id === 'lv-days' && isLive()) {
+    const n = Math.max(1, Math.round(C.num(e.target.value) || 1));
+    S.live = { ...S.live, days: n, daysAt: nowISO() };
+    guard(saveLive).then(refresh);
+  }
 });
 
 main.addEventListener('submit', async e => {
@@ -1917,7 +2180,7 @@ main.addEventListener('submit', async e => {
     else if (moved) toast(`Location removed. ${plural(moved, 'item')} moved.`);
     Object.assign(S.settings, {
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
-      drinkL: g('s-drink') ?? 3, drinkHotL: g('s-drinkhot') ?? 4, washBareL: g('s-wbare') ?? 2, washBasicL: g('s-wbasic') ?? 5, washComfortL: g('s-wcomf') ?? 12, reserveDays: g('s-reserve') ?? 1,
+      drinkL: g('s-drink') ?? 3, drinkHotL: g('s-drinkhot') ?? 4, washBareL: g('s-wbare') ?? 2, washBasicL: g('s-wbasic') ?? 5, washComfortL: g('s-wcomf') ?? 12, reserveDays: g('s-reserve') ?? 1, waterAlertDays: g('s-walert') ?? 2,
       petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
       oilCap: Math.min(0.95, (g('s-oil') ?? 0) / 100), sweetCap: Math.min(0.95, (g('s-sweet') ?? 0) / 100),
       eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180), bagMaxG: g('s-bagg') ?? 500, bagMaxL: g('s-bagl') ?? 1.5, bagMinKcal100: g('s-bagk') ?? 300,

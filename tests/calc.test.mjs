@@ -435,3 +435,80 @@ test('water in a scenario: the answers reach the calculation, and each level cha
   assert.equal(t.water, 30); assert.equal(t.wash, 30); assert.equal(t.treat, 100);
   assert.deepEqual(C.missing({ area: 'water', type: 'treatment', name: 'Tablets' }), ['litres it treats']);
 });
+
+import * as LV from '../js/live.js';
+const T0 = '2026-11-29T01:00:00.000Z', D0 = '2026-11-29';
+const liveOf = (o) => LV.start({ name: 'Water cut at home', days: 7, place: 'home', tap: false, grid: true, shops: true, ...o }, 'e1', T0, D0, 'devA');
+
+test('live: an event starts from a scenario, counts its days, and looks ahead over what is left', () => {
+  const lv = liveOf();
+  assert.deepEqual(lv.state, { tap: 'off', grid: true, shops: true }); assert.equal(lv.on, true); assert.equal(lv.days, 7);
+  assert.deepEqual(LV.start(null, 'e0', T0, D0).state, { tap: 'on', grid: true, shops: true });
+  assert.equal(LV.start({ tap: false, tapState: 'unsafe', grid: false, shops: false, days: 5, name: 'x' }, 'e2', T0, D0).state.tap, 'unsafe');
+  assert.equal(LV.dayNumber(lv, D0), 1); assert.equal(LV.dayNumber(lv, '2026-12-01'), 3);
+  assert.equal(LV.daysLeft(lv, D0), 7); assert.equal(LV.daysLeft(lv, '2026-12-01'), 5);
+  assert.equal(LV.daysLeft({ ...lv, used: { [D0]: T0 } }, D0), 6);                        // today's water is logged: count from tomorrow
+  const scn = LV.scenario(lv, '2026-12-01');
+  assert.equal(scn.days, 5); assert.equal(scn.tap, false); assert.equal(scn.real, true); assert.equal(scn.place, 'home');
+  assert.equal(LV.scenario(lv, '2026-12-20').days, 1);                                    // past the expected end: still plan a day ahead
+  // live, the tap is as reported: power off with water still running needs no stock, whatever the building usually does
+  const dark = LV.scenario({ ...lv, state: { tap: 'on', grid: false, shops: true } }, D0);
+  assert.equal(WT.plan(dark, [], WS, {}, { pets: 0, target: 3 }).needed, false);
+  assert.equal(WT.plan({ ...dark, real: false }, [], WS, {}, { pets: 0, target: 3 }).needed, true);
+});
+
+test('live: two devices merge part by part, in either order, and an end on one ends it on all', () => {
+  const base = liveOf();
+  const a = { ...base, done: { news: { at: '2026-11-29T03:00:00.000Z', on: true } }, days: 5, daysAt: '2026-11-29T04:00:00.000Z' };
+  const b = { ...base, state: { ...base.state, grid: false }, since: { ...base.since, grid: '2026-11-29T05:00:00.000Z' }, done: { fill: { at: '2026-11-29T02:00:00.000Z', on: true } }, used: { [D0]: T0 } };
+  const m = LV.merge(a, b);
+  assert.ok(LV.same(m, LV.merge(b, a)));
+  assert.equal(m.state.grid, false); assert.equal(m.state.tap, 'off'); assert.equal(m.days, 5);
+  assert.deepEqual(Object.keys(m.done).sort(), ['fill', 'news']); assert.ok(m.used[D0]);
+  assert.ok(LV.same(LV.merge(m, a), m) && LV.same(LV.merge(m, b), m));                    // merging again changes nothing, so devices settle
+  const undone = LV.merge(m, { ...base, done: { fill: { at: '2026-11-29T06:00:00.000Z', on: false } } });
+  assert.equal(undone.done.fill.on, false);                                               // the later word on a tick wins
+  const ended = LV.merge({ ...a, on: false, endedAt: '2026-11-30T00:00:00.000Z' }, b);
+  assert.equal(ended.on, false); assert.equal(LV.merge(b, { ...a, on: false, endedAt: '2026-11-30T00:00:00.000Z' }).on, false);
+  const later = LV.start(null, 'e9', '2026-12-05T00:00:00.000Z', '2026-12-05');
+  assert.equal(LV.merge(a, later).id, 'e9'); assert.equal(LV.merge(later, a).id, 'e9');   // a newer event replaces an older one
+  assert.equal(LV.merge(null, a), a); assert.equal(LV.merge(a, null), a);
+  const got = SY.merge({ items: [], events: [], meta: { live: { at: '' } } }, [{ t: 'meta', k: 'live', at: T0, v: a }]);
+  assert.equal(got.meta.live.v.id, 'e1');
+});
+
+test('live: the steps follow what is working, and say how much', () => {
+  const items = [wi('drinking', 12, 1.5)];
+  const ctx = (lv, a, day) => { const scn = LV.scenario(lv, day || D0); return { answers: a, water: WT.plan(scn, items, WS, { ...a, heaterL: 0 }, { pets: 3, target: scn.days }), left: LV.daysLeft(lv, day || D0) }; };
+  const keys = (lv, a, day) => LV.steps(lv, ctx(lv, a, day)).map(x => x.key);
+  const a = { containersL: 60, tubL: 150, heaterL: 30 };
+  const cut = LV.steps(liveOf(), ctx(liveOf(), a));
+  assert.deepEqual(cut.map(x => x.key), ['fill', 'heater', 'news', 'buy', 'washless']);
+  assert.equal(cut[0].act, 'fill'); assert.match(cut[0].text, /your containers \(60 L\) and the tub \(150 L\)/);
+  assert.match(cut[3].text, /Buy drinking water today: 36\.3 L more covers the 7 days still expected/);   // 7 × 6.9 − (18 − 6)
+  assert.deepEqual(keys(liveOf({ shops: false }), a), ['fill', 'heater', 'news', 'stretch', 'washless']);
+  assert.deepEqual(keys(liveOf(), { ...a, source: ['pool'] }), ['fill', 'heater', 'news', 'buy', 'fetch']);
+  assert.deepEqual(keys(liveOf({ tap: false, tapState: 'unsafe' }), a), ['nodrink', 'boil', 'news']);          // boiling on the hob covers drinking
+  assert.deepEqual(keys(liveOf({ tap: false, tapState: 'unsafe' }), { ...a, boilOk: 'no' }), ['nodrink', 'news', 'buy']);
+  assert.deepEqual(keys(liveOf({ tap: true, grid: false }), a), ['fill']);                                      // power off: the taps may stop
+  assert.deepEqual(keys(liveOf({ tap: true, grid: false }), { ...a, tapInCut: 'yes' }), []);
+  assert.deepEqual(keys(liveOf({ tap: true }), a), []);
+  assert.equal(keys(liveOf(), a, '2026-12-10')[3], 'longer:7');
+});
+
+test('live: a day of water is drawn from filled water first, then bottles, and never from the reserve', () => {
+  const items = [
+    { id: 'b', area: 'water', type: 'drinking', name: 'Bottle', qty: 6, cap: 1.5, bestBefore: '2027-05-01' },      // 9 L, of which 6 L is the reserve
+    { id: 'j', area: 'water', type: 'filled', name: 'Jerry can', qty: 1, cap: 5, lastChecked: '2026-08-01' },
+    { id: 'k', area: 'water', type: 'washing', name: 'Bucket', qty: 1, cap: 3 },
+  ];
+  const lv = liveOf(), scn = LV.scenario(lv, D0), p = WT.plan(scn, items, WS, {}, { pets: 3, target: scn.days });
+  const d = LV.dayWater(items, p, 'off');
+  assert.deepEqual(d.lines.map(l => [l.id, l.use]), [['j', 'drink'], ['b', 'drink'], ['k', 'wash']]);
+  near(d.lines[0].litres, 5); near(d.lines[1].litres, 1.9); near(d.lines[1].units, 1.9 / 1.5); near(d.lines[2].litres, 3);
+  near(d.drinkShort, 0); near(d.washShort, 1);
+  const thin = LV.dayWater([items[0]], p, 'off');                                                               // 3 L usable against 6.9 L
+  near(thin.lines[0].litres, 3); near(thin.drinkShort, 3.9);
+  assert.deepEqual(LV.dayWater(items, p, 'on').lines, []);
+  assert.ok(LV.dayWater(items, p, 'unsafe').lines.every(l => l.use === 'drink'));                              // an unsafe tap still washes
+});

@@ -74,7 +74,7 @@ export const DEFAULT_SETTINGS = {
   adults: 2, dogs: 0, cats: 0,
   rationLevel: 'survival', kcalSurvival: 1600, kcalStandard: 2100, kcalActive: 2700, proteinPerDay: 60, proteinLimits: true,
   // Water, in litres per person a day. Washing follows the posture: bare minimum, basic or comfortable.
-  drinkL: 3, drinkHotL: 4, washBareL: 2, washBasicL: 5, washComfortL: 12, reserveDays: 1, petWaterEach: 0.3,
+  drinkL: 3, drinkHotL: 4, washBareL: 2, washBasicL: 5, washComfortL: 12, reserveDays: 1, waterAlertDays: 2, petWaterEach: 0.3,
   waterPerPerson: 4,          // the single figure used before water was split into drinking and washing; kept for older versions
   flameMinPerDay: 30, powerWhPerDay: 50,
   oilCap: 0.1, oilCategory: 'Oil & Fat', sweetCap: 0, sweetCategory: 'Honey & Sweeteners',

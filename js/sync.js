@@ -81,7 +81,7 @@ export function merge(local, incoming) {
       if (!cur || String(r.v.updatedAt || '') > String(cur.updatedAt || '')) { items.set(r.v.id, r.v); changed.set(r.v.id, r.v); }
     } else if (r.t === 'event' && r.v && typeof r.v.id === 'string' && !seen.has(r.v.id)) {
       seen.add(r.v.id); newEvents.push(r.v);
-    } else if (r.t === 'meta' && (r.k === 'settings' || r.k === 'scenarios') && typeof r.at === 'string' && r.at > String((meta[r.k] && meta[r.k].at) || '')) {
+    } else if (r.t === 'meta' && (r.k === 'settings' || r.k === 'scenarios' || r.k === 'live') && typeof r.at === 'string' && r.at > String((meta[r.k] && meta[r.k].at) || '')) {
       meta[r.k] = { at: r.at, v: r.v }; newMeta[r.k] = meta[r.k];
     }
   }
