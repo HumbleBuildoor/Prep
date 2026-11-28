@@ -11,7 +11,7 @@ import * as TD from './todo.js';
 import * as WT from './water.js';
 import * as LV from './live.js';
 
-const APP_VERSION = '1.18.0';
+const APP_VERSION = '1.19.0';
 const MAX_PHOTOS = 3;
 
 // ---------- small helpers ----------
@@ -398,21 +398,24 @@ function scenarioKcal(scn) { return C.kcalFor(scn, S.settings); }
 
 function scenarioView(scn, r) {
   const logged = r.needs.filter(n => n.logged), unlogged = r.needs.filter(n => !n.logged);
+  // The limit is whichever logged need fails first. A need that lasts its own target (food until the shops can be counted on) lasts the scenario.
   let lim = null;
-  for (const n of logged) if (!lim || n.days < lim.days) lim = n;
-  const v = { cls: 'ok', days: null, ratio: 1, limit: '', unlogged, covered: false };
+  for (const n of logged) if (!lim || C.cover(n, r.target) < C.cover(lim, r.target)) lim = n;
+  const v = { cls: 'ok', days: null, of: r.target, ratio: 1, limit: '', unlogged, covered: false };
+  const missing = 'Not logged: ' + unlogged.map(n => areaOf(n.id).short).join(', ');
   if (!r.needs.length) { v.limit = 'Nothing to stock'; v.covered = true; return v; }
-  if (!logged.length) { v.cls = 'none'; v.ratio = 0; v.limit = 'Not logged: ' + unlogged.map(n => areaOf(n.id).short).join(', '); return v; }
-  v.days = lim.days; v.ratio = r.target > 0 ? Math.min(1, lim.days / r.target) : 1;
-  if (lim.days < r.target) {
-    v.cls = v.ratio >= 0.5 ? 'short' : 'bad';
+  if (!logged.length) { v.cls = 'none'; v.ratio = 0; v.limit = missing; return v; }
+  const d = C.cover(lim, r.target);
+  if (d < r.target) {
+    v.days = d; v.ratio = r.target > 0 ? d / r.target : 1; v.cls = v.ratio >= 0.5 ? 'short' : 'bad';
     const many = lim.lines.filter(l => l.essential !== false && !l.soft).length > 1;
-    v.limit = lim.name + (many && lim.limit ? ' (' + lim.limit.label.toLowerCase() + ')' : '');
-  } else if (unlogged.length) { v.cls = 'short'; v.limit = 'Covered so far'; }
-  else { v.limit = 'Covered'; v.covered = true; }
-  const soft = logged.flatMap(n => n.lines.filter(l => l.soft && l.days < r.target));
-  if (v.covered && soft.length) { v.covered = false; v.cls = 'short'; v.limit = soft[0].label + ' is short'; }
-  if (unlogged.length) v.limit += ` · ${unlogged.length} not logged`;
+    v.limit = lim.name + (many && lim.limit ? ' (' + lim.limit.label.toLowerCase() + ')' : '') + (unlogged.length ? ` · ${unlogged.length} not logged` : '');
+  } else if (unlogged.length) { v.cls = 'none'; v.ratio = 0; v.limit = missing; }       // nothing logged falls short, but the days cannot be claimed
+  else {
+    v.days = d; v.limit = 'Covered'; v.covered = true;
+    const soft = logged.flatMap(n => n.lines.filter(l => l.soft && l.days < n.target));
+    if (soft.length) { v.covered = false; v.cls = 'short'; v.limit = soft[0].label + ' is short'; }
+  }
   return v;
 }
 
@@ -443,7 +446,7 @@ function viewReady() {
 
   let h = `<section class="hero h-${heroCls}"><div class="hero-ring">${ring(S.scenarios.length ? covered / S.scenarios.length : 1, 'hero', `${covered}<small>/${S.scenarios.length}</small>`)}</div>
       <div class="hero-text"><div class="eyebrow">Scenarios covered</div>
-        <div class="hero-line">${weak ? `Weakest: <b>${esc(weak.scn.name)}</b>, ${weak.v.days === null ? 'nothing logged' : `${fmtDays(weak.v.days)} of ${plural(weak.scn.days, 'day')}`}` : 'Everything you have logged covers every scenario.'}</div>
+        <div class="hero-line">${weak ? `Weakest: <b>${esc(weak.scn.name)}</b>, ${weak.v.days === null ? esc(weak.v.limit.toLowerCase()) : `${fmtDays(weak.v.days)} of ${plural(weak.v.of, 'day')}`}` : 'Everything you have logged covers every scenario.'}</div>
         <div class="hero-sub">${esc(hh)}</div></div></section>`;
   if (items.length) h += '<button class="livelink" data-act="live-go">Something is happening now<small>Start Live mode</small></button>';
   const m = todoModel(), nx = TD.next([m.gaps, m.now, m.finds, m.flags], 3), count = m.gaps.length + m.now.length + m.finds.length + m.flags.length;
@@ -460,8 +463,8 @@ function viewReady() {
       <div class="actions start"><button class="btn primary" data-act="add">Add item</button><a class="btn" href="#more">Import a backup</a></div></div>`;
   }
   h += '<ul class="tilegrid">' + views.map(({ scn, v }) =>
-    `<li><button class="scn t-${v.cls}" data-act="scn" data-id="${esc(scn.id)}"><span class="ringbox">${ring(v.ratio, v.cls, v.days === null ? '–' : fmtDays(v.days))}</span>
-      <span class="t-of">of ${plural(scn.days, 'day')}</span><span class="t-name">${esc(scn.name)}</span><span class="t-lim">${esc(v.limit)}</span></button></li>`).join('') +
+    `<li><button class="scn t-${v.cls}" data-act="scn" data-id="${esc(scn.id)}"><span class="ringbox">${ring(v.ratio, v.cls, v.days === null ? '–' : v.days === Infinity ? '✓' : fmtDays(v.days))}</span>
+      <span class="t-of">of ${plural(v.of, 'day')}</span><span class="t-name">${esc(scn.name)}</span><span class="t-lim">${esc(v.limit)}</span></button></li>`).join('') +
     `<li><button class="scn t-add" data-act="scn-new"><span class="t-plus" aria-hidden="true">+</span><span class="t-name">Add scenario</span></button></li></ul>`;
 
   if (items.length) {
@@ -606,11 +609,12 @@ const stamp = iso => new Date(iso).toLocaleString('en-MY', { weekday: 'short', d
 
 function liveCtx() {
   const lv = S.live, s = S.settings, t = today(), sit = s.situation || {}, answers = sit.answers || {};
-  const scn = LV.scenario(lv, t);
+  const scn = LV.scenario(lv, t, Date.now());
   // While live, only water that has actually been captured counts: the heater's water is added when its step is ticked.
   const r = C.evaluate(scn, live(), { ...s, situation: { ...sit, answers: { ...answers, heaterL: 0 } } }, t, typeLabel);
   const wn = r.needs.find(n => n.id === 'water'), p = wn ? wn.info : null, left = LV.daysLeft(lv, t);
-  const steps = LV.steps(lv, { answers, water: p, left }), isDone = k => !!(lv.done[k] && lv.done[k].on);
+  const clock = iso => new Date(iso).toLocaleString('en-MY', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const steps = LV.steps(lv, { answers, water: p, left, heat: C.heatFor(scn, answers), clock }), isDone = k => !!(lv.done[k] && lv.done[k].on);
   return { lv, scn, r, p, left, answers, day: LV.dayNumber(lv, t), usedToday: !!(lv.used && lv.used[t]),
     todo: steps.filter(x => !isDone(x.key)), done: steps.filter(x => isDone(x.key)) };
 }
@@ -805,7 +809,7 @@ const FIGS = {
   's-ksurv': { def: 1600 }, 's-kstd': { def: 2100 }, 's-kact': { def: 2700 }, 's-prot': { def: 60 },
   's-drink': { def: 3, floor: 2.5, why: 'Under 2.5 L. Sphere gives 2.5 to 3 L as the least for drinking and food.' }, 's-drinkhot': { def: 4 },
   's-wbare': { def: 2, floor: 2, why: 'Under 2 L. Sphere gives 2 L as the least for basic hygiene.' }, 's-wbasic': { def: 5 }, 's-wcomf': { def: 12 },
-  's-petw': { def: 0.3 }, 's-reserve': { def: 1 }, 's-walert': { def: 2 }, 's-flame': { def: 30 }, 's-power': { def: 50 },
+  's-petw': { def: 0.3 }, 's-reserve': { def: 1 }, 's-walert': { def: 2 }, 's-flame': { def: 30 }, 's-power': { def: 50 }, 's-boil': { def: 4 }, 's-noshop': { def: 3 },
   's-oil': { def: 10 }, 's-sweet': { def: 0 }, 's-eat': { def: 90 }, 's-soon': { def: 180 }, 's-bagg': { def: 500 }, 's-bagl': { def: 1.5 }, 's-bagk': { def: 300 },
 };
 function figNote(id, value) {
@@ -842,10 +846,12 @@ function viewMore() {
         ${N('s-petw', 'Water per pet, L a day', s.petWaterEach)}${N('s-reserve', 'Sealed water held back, days', s.reserveDays ?? 1)}
         ${N('s-walert', 'In Live mode, warn when drinking water is under, days', s.waterAlertDays ?? 2)}</div>
       <h3>Fuel and power, a day</h3><div class="grid2">
-        ${N('s-flame', 'Cooking flame, min', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh', s.powerWhPerDay, 1)}</div>
+        ${N('s-flame', 'Cooking flame, min', s.flameMinPerDay, 1)}${N('s-power', 'Power, Wh', s.powerWhPerDay, 1)}
+        ${N('s-boil', 'Flame to boil a litre of water, min', s.boilMinPerL ?? 4)}</div>
       <h3>What counts</h3><div class="grid2">
         ${N('s-oil', 'Oil, at most % of kcal', Math.round(s.oilCap * 100), 1)}${N('s-sweet', 'Sweeteners, at most % (0 = no cap)', Math.round(s.sweetCap * 100), 1)}
-        ${N('s-eat', 'Use first under, days', s.eatFirstDays, 1)}${N('s-soon', 'Soon under, days', s.soonDays, 1)}</div>
+        ${N('s-eat', 'Use first under, days', s.eatFirstDays, 1)}${N('s-soon', 'Soon under, days', s.soonDays, 1)}
+        ${N('s-noshop', 'Days with no shopping at the start of any event', s.noResupplyDays ?? 3, 1)}</div>
       <h3>Grab bags: what to suggest for them</h3><div class="grid2">
         ${N('s-bagg', 'One pack, g', s.bagMaxG ?? 500, 1)}${N('s-bagl', 'One water bottle, L', s.bagMaxL ?? 1.5)}
         ${N('s-bagk', 'Food must give at least, kcal per 100 g', s.bagMinKcal100 ?? 300, 1)}</div>
@@ -1583,23 +1589,37 @@ function openScenario(id) {
   const dd = d => (d === Infinity ? 'covered' : fmtDays(d) + ' days');
   let rows = '';
   for (const n of r.needs) {
-    const ratio = n.logged && r.target > 0 ? Math.min(1, n.days / r.target) : 0;
-    const cls = !n.logged ? 'none' : n.days >= r.target ? 'ok' : ratio >= 0.5 ? 'short' : 'bad';
+    const ratio = n.logged && n.target > 0 ? Math.min(1, n.days / n.target) : 0;
+    const cls = !n.logged ? 'none' : n.days >= n.target ? 'ok' : ratio >= 0.5 ? 'short' : 'bad';
     rows += `<section class="needblock nb-${cls}"><div class="nb-head"><span class="thumb sm a-${esc(n.id)}">${areaIcon(n.id)}</span><h3>${esc(n.name)}</h3>
-      <span class="nb-days">${!n.logged ? 'not logged' : n.days === Infinity ? 'covered' : `<b>${fmtDays(n.days)}</b> of ${r.target} days`}</span></div>
+      <span class="nb-days">${!n.logged ? 'not logged' : n.days === Infinity ? 'covered' : `<b>${fmtDays(n.days)}</b> of ${plural(n.target, 'day')}`}</span></div>
       <div class="bar"><i style="width:${(ratio * 100).toFixed(1)}%"></i></div><ul>`;
     for (const l of n.lines) {
       const uses = l.unit === 'person-days' ? plural(n1(l.perDay), 'person') : l.unit === 'pet-days' ? plural(n1(l.perDay), 'pet') : amount(l.perDay, l.unit) + ' a day';
       const have = l.unit === 'person-days' || l.unit === 'pet-days' ? (l.have ? 'in stock' : 'none logged') : l.have === Infinity ? 'does not run out' : amount(l.have, l.unit);
-      rows += `<li${l.soft && l.days < r.target ? ' class="l-short"' : ''}><span>${esc(l.label)}${l.essential === false ? ' <small>(not counted)</small>' : ''}<small>${esc(have)} · ${esc(uses)}</small></span><b>${dd(l.days)}</b></li>`;
+      rows += `<li${l.soft && l.days < n.target ? ' class="l-short"' : ''}><span>${esc(l.label)}${l.essential === false ? ' <small>(not counted)</small>' : ''}<small>${esc(have)} · ${esc(uses)}</small></span><b>${dd(l.days)}</b></li>`;
     }
-    rows += '</ul>' + (n.id === 'water' && n.info ? waterNotes(n.info, scn, r).map(t => `<p class="note">${esc(t)}</p>`).join('') : '') + '</section>';
+    const under = n.id === 'water' && n.info ? waterNotes(n.info, scn, r)
+      : n.id === 'fuel' && n.info && n.info.boilMin > 0.05 ? [`${n0(n.info.boilMin)} min a day of this boils drinking water, which comes before cooking. A litre is taken as ${n1(s.boilMinPerL ?? 4)} min of flame.`] : [];
+    rows += '</ul>' + under.map(t => `<p class="note">${esc(t)}</p>`).join('') + '</section>';
   }
   const notes = [];
-  const food = r.needs.find(n => n.id === 'food');
+  const food = r.needs.find(n => n.id === 'food'), ans = (s.situation || {}).answers || {};
+  if (r.noShop > 0 && r.noShop < r.target) notes.push(`Food, cooking fuel and pet food are counted for the first ${plural(r.noShop, 'day')} only. Shops are open in this scenario, but are not counted on at the start, when everyone else is buying.`);
   if (food) {
-    const i = food.info;
-    if (!i.kitchen && i.cook > 0) notes.push(`${n0(i.cook)} kcal of your food needs cooking. ${n0(i.cookUsable)} kcal of it is counted, limited by how long the fuel lasts.`);
+    const i = food.info, h = i.heat;
+    if (i.fresh > 0) notes.push(`About ${n1(i.freshDays)} ${i.freshDays === 1 ? 'day' : 'days'} of meals from your fridge and freezer are counted, from your own estimate. Eat them first.` +
+      (scn.grid ? '' : ` Without power, fridge food is safe for about 4 hours and ${ans.freezerFull === 'full' ? 'a full freezer for about 48' : 'a freezer that is half full for about 24'} hours, with the doors kept shut.`));
+    if (!h.kitchen && !away) {
+      if (h.assumed) notes.push('This assumes your hob does not work with the power off, because you have not said how you cook or whether it lights. Answer it under More, in Your household and situation.');
+      if (h.stove) notes.push('Cooking here is on your portable stove. Use it on a balcony or beside a wide-open window, never in a closed room.');
+      else if (i.cook > 0) notes.push(`${n0(i.cook)} kcal of your food needs cooking and is not counted: ${h.owns ? 'you have a portable stove but nowhere ventilated to use it' : 'you have not said you own a portable stove'}.`);
+    }
+    if (i.cook > i.cookUsable + 1 && (h.kitchen || h.stove)) {
+      notes.push(i.waterDays <= i.heatDays
+        ? (i.posture === 'bare' ? `At Bare minimum there is no water to cook with, so the ${n0(i.cook)} kcal of your food that needs cooking is not counted. Basic allows for it.` : `${n0(i.cook)} kcal of your food needs cooking. ${n0(i.cookUsable)} kcal of it is counted: water to cook with lasts ${fmtDays(i.waterDays)} days.`)
+        : `${n0(i.cook)} kcal of your food needs cooking. ${n0(i.cookUsable)} kcal of it is counted, limited by how long the fuel lasts.`);
+    }
     if (i.oil > i.oilUsed + 1) notes.push(`Oil is capped at ${Math.round(s.oilCap * 100)}% of calories: ${n0(i.oilUsed)} of ${n0(i.oil)} kcal counted.`);
     if (i.sweet > i.sweetUsed + 1) notes.push(`Sweeteners are capped at ${Math.round(s.sweetCap * 100)}% of calories: ${n0(i.sweetUsed)} of ${n0(i.sweet)} kcal counted.`);
     if (i.noKcal) notes.push(`${plural(i.noKcal, 'food item')} with no kcal figure count as zero.`);
@@ -1611,7 +1631,7 @@ function openScenario(id) {
     .map(([nid, key, label]) => ({ label, days: byPos.map(res => { const l = lineOf(res, nid, key); return l ? l.days : null; }) }))
     .filter(row => row.days.some(d => d !== null) && new Set(row.days.map(d => (d === null ? '' : dd(d)))).size > 1);
   // The same list Live mode would open with, so a scenario can be walked through before it happens.
-  const rehearsal = away ? [] : LV.steps(LV.start(scn, 'rehearsal', nowISO(), today(), ''), { answers: (s.situation || {}).answers || {}, water: wn ? wn.info : null, left: scn.days });
+  const rehearsal = away ? [] : LV.steps(LV.start(scn, 'rehearsal', nowISO(), today(), ''), { answers: (s.situation || {}).answers || {}, water: wn ? wn.info : null, left: scn.days, heat: C.heatFor(scn, (s.situation || {}).answers || {}) });
   const compare = cmp.length ? `<details class="more"><summary>Compare the three levels</summary><table class="cmp"><tr><th></th>${WT.POSTURES.map(p => `<th${p[0] === pos ? ' class="cur"' : ''}>${p[1]}</th>`).join('')}</tr>
     ${cmp.map(row => `<tr><td>${row.label}</td>${row.days.map((d, i) => `<td${WT.POSTURES[i][0] === pos ? ' class="cur"' : ''}>${d === null ? '–' : d === Infinity ? 'covered' : fmtDays(d)}</td>`).join('')}</tr>`).join('')}</table>
     <p class="note">Days each lasts in this scenario. Change your level on the Ready screen.</p></details>` : '';
@@ -1915,7 +1935,7 @@ function openAdvisor(kind) {
       const r = C.evaluate(scn, live(), s, today(), typeLabel);
       const locs = Array.isArray(scn.locations) && scn.locations.length ? 'counts only ' + scn.locations.join(' and ') : 'counts every location';
       return `- ${scn.name}: ${scn.days} days, ${scn.place === 'away' ? 'away from home' : 'at home'}, ${locs}. ` +
-        (r.needs.length ? r.needs.map(n => `${n.name} ${n.logged ? fmtDays(n.days) + ' days' : 'nothing logged'}`).join('; ') : 'nothing needs stocking') + '.';
+        (r.needs.length ? r.needs.map(n => `${n.name} ${!n.logged ? 'nothing logged' : n.days === Infinity ? 'does not run out' : fmtDays(n.days) + ' days'}${n.target !== r.target ? ` (needed for the first ${n.target} days)` : ''}`).join('; ') : 'nothing needs stocking') + '.';
     }).join('\n');
     const kindOf = it => areaOf(it.area).name + ' / ' + (it.area === 'food' ? it.category : typeLabel(it.area, it.type));
     const sitText = SIT.summary(s.situation, s.locations);
@@ -2181,7 +2201,7 @@ main.addEventListener('submit', async e => {
     Object.assign(S.settings, {
       kcalSurvival: g('s-ksurv') || 1600, kcalStandard: g('s-kstd') || 2100, kcalActive: g('s-kact') || 2700, proteinPerDay: g('s-prot') ?? 0,
       drinkL: g('s-drink') ?? 3, drinkHotL: g('s-drinkhot') ?? 4, washBareL: g('s-wbare') ?? 2, washBasicL: g('s-wbasic') ?? 5, washComfortL: g('s-wcomf') ?? 12, reserveDays: g('s-reserve') ?? 1, waterAlertDays: g('s-walert') ?? 2,
-      petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0,
+      petWaterEach: g('s-petw') ?? 0, flameMinPerDay: g('s-flame') ?? 0, powerWhPerDay: g('s-power') ?? 0, boilMinPerL: g('s-boil') ?? 4, noResupplyDays: Math.round(g('s-noshop') ?? 3),
       oilCap: Math.min(0.95, (g('s-oil') ?? 0) / 100), sweetCap: Math.min(0.95, (g('s-sweet') ?? 0) / 100),
       eatFirstDays: Math.round(g('s-eat') ?? 90), soonDays: Math.round(g('s-soon') ?? 180), bagMaxG: g('s-bagg') ?? 500, bagMaxL: g('s-bagl') ?? 1.5, bagMinKcal100: g('s-bagk') ?? 300,
       proteinLimits: $('#s-protlim').checked, countExpired: $('#s-expired').checked,

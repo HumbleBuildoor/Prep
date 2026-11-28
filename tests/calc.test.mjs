@@ -39,7 +39,7 @@ test('oil cap matches the closed form min(oil, food * cap / (1 - cap))', () => {
 
 test('water cut: drinking sets the days, washing is counted beside it, one sealed day is held back', () => {
   const items = [{ area: 'water', qty: 10, cap: 1.5, location: 'Home' }];
-  const r = C.evaluate(scn('water-cut'), items, S, TODAY);
+  const r = C.evaluate(scn('water-cut'), items, { ...S, noResupplyDays: 0 }, TODAY);        // shops counted on from day one, to look at water alone
   assert.deepEqual(r.needs.map(n => n.id), ['water']);
   const [d, w] = r.needs[0].lines;
   near(d.perDay, 2 * 3 + 3 * 0.3); near(w.perDay, 2 * 2);                // 3 L to drink, 2 L to wash at bare minimum, pets on top
@@ -47,7 +47,7 @@ test('water cut: drinking sets the days, washing is counted beside it, one seale
   assert.equal(w.days, 0); assert.equal(w.soft, true); assert.equal(r.needs[0].limit.key, 'water');
   assert.equal(r.status, 'bad');
   near(r.needs[0].info.stock.reserve, 6);
-  near(C.evaluate(scn('water-cut'), items, { ...S, reserveDays: 0 }, TODAY).minDays, 15 / 6.9);
+  near(C.evaluate(scn('water-cut'), items, { ...S, reserveDays: 0, noResupplyDays: 0 }, TODAY).minDays, 15 / 6.9);
 });
 
 test('shops closed with power on: kitchen works, so all food counts and fuel is not needed', () => {
@@ -64,16 +64,93 @@ test('shops closed with power on: kitchen works, so all food counts and fuel is 
   assert.ok(!r.needs.some(n => n.id === 'water'));
 });
 
-test('power off at home: food that needs cooking is limited by fuel', () => {
+test('power off at home: food that needs cooking counts only with a usable stove, fuel, and water to cook in', () => {
   const rice = food({ kcal: 3600, qty: 3, needsCooking: true });         // 10,800 kcal
   const tins = food({ kcal: 800, qty: 4, category: 'Protein (canned)' }); //  3,200 kcal
-  const none = C.evaluate(scn('all-off'), [rice, tins], S, TODAY).needs.find(n => n.id === 'food');
-  near(none.lines[0].have, 3200);                                         // no fuel: rice does not count
   const twoCans = { area: 'fuel', qty: 2, cap: 30, location: 'Home' };    // 60 min = 2 days at 30 min a day
-  const r = C.evaluate(scn('all-off'), [rice, tins, twoCans], S, TODAY);
-  const f = r.needs.find(n => n.id === 'food');
-  near(f.lines[0].have, 3200 + 2 * 3200);                                 // rice counts for the 2 fuel days only
+  const drink = { area: 'water', type: 'drinking', qty: 40, cap: 5, location: 'Home' };       // enough that none has to be boiled
+  const wash = { area: 'water', type: 'washing', qty: 10, cap: 20, location: 'Home' };        // 200 L to wash and cook with
+  const all = [rice, tins, twoCans, drink, wash];
+  const at = (answers, posture) => ({ ...S, posture: posture || 'basic', situation: { answers } });
+  const kcalOf = (items, s) => C.evaluate(scn('all-off'), items, s, TODAY).needs.find(n => n.id === 'food').lines[0].have;
+  const stove = { stove: 'yes', stoveWhere: 'balcony' };
+  near(kcalOf(all, at({})), 3200);                                        // no word on a stove: the fuel cannot be counted on
+  near(kcalOf(all, at({ stove: 'yes', stoveWhere: 'nowhere' })), 3200);   // a stove with nowhere ventilated to stand is no stove
+  near(kcalOf([rice, tins, drink, wash], at(stove)), 3200);               // no fuel
+  const r = C.evaluate(scn('all-off'), all, at(stove), TODAY);
+  near(r.needs.find(n => n.id === 'food').lines[0].have, 3200 + 2 * 4200); // rice for the 2 days the fuel lasts, at 4,200 kcal a day
   near(r.needs.find(n => n.id === 'fuel').days, 2);
+  near(kcalOf(all, at(stove, 'bare')), 3200);                             // bare minimum allows no cooking water
+  near(kcalOf([rice, tins, twoCans, { ...drink, qty: 25 }], at(stove)), 3200);   // basic, but nothing to cook in: every litre is needed for drinking
+  // a gas hob that lights without mains is a working kitchen: all the rice counts and stored fuel is not a need
+  const gas = C.evaluate(scn('all-off'), [rice, tins, drink, wash], at({ cooking: ['cylinder'], hobNoMains: 'yes' }), TODAY);
+  near(gas.needs.find(n => n.id === 'food').lines[0].have, 14000); assert.ok(!gas.needs.some(n => n.id === 'fuel'));
+  near(kcalOf([rice, tins, drink, wash], at({ cooking: ['cylinder'] })), 3200);             // not known whether the hob lights: assume it does not
+  near(kcalOf([rice, tins, drink, wash], at({ cooking: ['electric'], hobNoMains: 'yes' })), 3200);
+});
+
+test('fuel is shared: boiling drinking water is charged to it before cooking', () => {
+  const rice = food({ kcal: 3600, qty: 10, needsCooking: true });
+  const cans = { area: 'fuel', qty: 4, cap: 70, location: 'Home' };       // 280 min: at 4 min a litre it could boil 70 L
+  const wash = { area: 'water', type: 'washing', qty: 10, cap: 20, location: 'Home' };
+  const s = { ...S, posture: 'basic', situation: { answers: { stove: 'yes', stoveWhere: 'window' } } };
+  const r = C.evaluate(scn('flood'), [rice, cans, wash], s, TODAY);       // 5 days, nothing bottled: every litre drunk is boiled washing water
+  const water = r.needs.find(n => n.id === 'water'), fuel = r.needs.find(n => n.id === 'fuel'), fd = r.needs.find(n => n.id === 'food');
+  near(water.lines[0].days, 70 / 8.9);                                    // the fuel, not the 200 L, is the limit
+  near(water.info.boiledL, 5 * 8.9);
+  near(fuel.lines[0].perDay, 30 + 5 * 8.9 * 4 / 5); near(fuel.info.boilMin, 8.9 * 4);
+  near(fd.info.heatDays, (280 - 5 * 8.9 * 4) / 30);                       // what is left of the flame after the water
+  // with bottled water in reach nothing is boiled, and all the flame cooks
+  const bottled = C.evaluate(scn('flood'), [rice, cans, wash, { area: 'water', type: 'drinking', qty: 40, cap: 5, location: 'Home' }], s, TODAY);
+  near(bottled.needs.find(n => n.id === 'fuel').lines[0].perDay, 30); near(bottled.needs.find(n => n.id === 'food').info.heatDays, 280 / 30);
+});
+
+test('shops that are open are not counted on for the first days; each need has its own target', () => {
+  const r = C.evaluate(scn('water-cut'), [], S, TODAY);
+  assert.deepEqual(r.needs.map(n => [n.id, n.target]), [['water', 7], ['food', 3], ['pets', 3]]); assert.equal(r.noShop, 3);
+  assert.deepEqual(C.evaluate(scn('power-cut'), [], { ...S, situation: { answers: { tapInCut: 'yes' } } }, TODAY).needs.map(n => n.id), ['food', 'power', 'pets']);
+  assert.equal(C.evaluate(scn('shops-closed'), [], S, TODAY).needs.find(n => n.id === 'food').target, 30);
+  assert.equal(C.evaluate({ ...scn('water-cut'), days: 2 }, [], S, TODAY).needs.find(n => n.id === 'food').target, 2);
+  assert.ok(!C.evaluate({ ...scn('water-cut'), real: true }, [], S, TODAY).needs.some(n => n.id === 'food'));   // live, shops are as reported
+  // the limit is the need that fails first
+  const items = [{ area: 'water', type: 'drinking', qty: 1, cap: 40.5, location: 'Home' }, food({ kcal: 3200, qty: 2, protein: 240 }),
+    { area: 'pets', type: 'dogfood', qty: 1, cap: 30, location: 'Home' }, { area: 'pets', type: 'catfood', qty: 2, cap: 30, location: 'Home' }];
+  const x = C.evaluate(scn('water-cut'), items, S, TODAY);
+  near(x.needs[0].days, 5); near(x.needs[1].days, 2); assert.equal(x.limiting.id, 'food'); near(x.minDays, 2); near(x.ratio, 2 / 7);   // food fails first, on day 2 of the 7
+  const fed = C.evaluate(scn('water-cut'), [items[0], food({ kcal: 3200, qty: 3.5, protein: 420 }), items[2], items[3]], S, TODAY);
+  assert.equal(fed.limiting.id, 'water'); near(fed.minDays, 5);           // 3.5 days of food meets its 3-day target, so water at 5 of 7 is the limit
+  const g = C.gaps([scn('water-cut')], items, S, TODAY).find(q => q.key === 'food:kcal');
+  near(g.short, 3200); assert.equal(g.soonestTarget, 3);                  // one more day of food, not five
+});
+
+test('fridge and freezer: all of it counts with the power on, a day or two with it off, none with no way to cook', () => {
+  const s = (answers) => ({ ...S, situation: { answers } }), D = 2 * 1600;
+  const kcal = (id, answers) => C.evaluate(scn(id), [], s(answers), TODAY).needs.find(n => n.id === 'food').lines[0].have;
+  near(kcal('shops-closed', { fridgeDays: 'more' }), 4 * D);
+  near(kcal('shops-closed', { fridgeDays: 'none' }), 0); near(kcal('shops-closed', {}), 0);
+  const stove = { stove: 'yes', stoveWhere: 'balcony' };
+  near(kcal('all-off', { fridgeDays: 'week', freezerFull: 'full', ...stove }), 2 * D);
+  near(kcal('all-off', { fridgeDays: 'week', freezerFull: 'half', ...stove }), 1 * D);
+  near(kcal('all-off', { fridgeDays: 'some', freezerFull: 'full', ...stove }), 1.5 * D);
+  near(kcal('all-off', { fridgeDays: 'week', freezerFull: 'full' }), 0);                    // thawing food has to be cooked
+  near(kcal('bags', { fridgeDays: 'week' }), 0);
+  // live, what was in the freezer stops counting once the power has been off for as long as it holds
+  const liveKcal = offFor => C.evaluate({ ...scn('all-off'), real: true, offFor }, [], s({ fridgeDays: 'week', freezerFull: 'full', ...stove }), TODAY).needs.find(n => n.id === 'food').lines[0].have;
+  near(liveKcal(0.5), 1.5 * D); near(liveKcal(3), 0);
+});
+
+test('heat: what there is to cook on, by how the household cooks', () => {
+  const on = { place: 'home', grid: true }, off = { place: 'home', grid: false };
+  assert.deepEqual(C.heatFor(on, {}), { kitchen: true, stove: false, owns: false, assumed: false });
+  assert.equal(C.heatFor(off, {}).kitchen, false); assert.equal(C.heatFor(off, {}).assumed, true);                    // nothing answered: assume the worse case
+  assert.equal(C.heatFor(off, { cooking: ['electric'] }).kitchen, false); assert.equal(C.heatFor(off, { cooking: ['electric'] }).assumed, false);
+  assert.equal(C.heatFor(off, { cooking: ['mains'], hobNoMains: 'yes' }).kitchen, true);
+  assert.equal(C.heatFor(off, { cooking: ['mains'], hobNoMains: 'no' }).assumed, false);
+  assert.equal(C.heatFor(off, { cooking: ['cylinder'], hobNoMains: 'dk' }).assumed, true);
+  assert.equal(C.heatFor(off, { cooking: ['portable'], stoveWhere: 'window' }).stove, true);
+  assert.equal(C.heatFor(off, { stove: 'yes' }).stove, false); assert.equal(C.heatFor(off, { stove: 'yes' }).owns, true);
+  assert.equal(C.heatFor(off, { stove: 'no', stoveWhere: 'balcony' }).stove, false);
+  assert.equal(C.heatFor({ place: 'away' }, {}).stove, true);
 });
 
 test('leaving with the bags counts only the chosen locations and uses the active ration', () => {
@@ -144,7 +221,7 @@ test('gaps: the largest shortfall of each line across all scenarios', () => {
 });
 
 test('a scenario with nothing to stock is covered', () => {
-  const r = C.evaluate({ days: 3, place: 'home', tap: true, grid: true, shops: true }, [], S, TODAY);
+  const r = C.evaluate({ days: 3, place: 'home', tap: true, grid: true, shops: true }, [], { ...S, noResupplyDays: 0 }, TODAY);
   assert.equal(r.needs.length, 0); assert.equal(r.status, 'ok');
 });
 
@@ -276,7 +353,9 @@ test('situation: every question and option id is unique, and flags and summary f
 test('areas switched off are not judged: by default no medical or hygiene need appears', () => {
   const D = { ...DEFAULT_SETTINGS, adults: 2, dogs: 1, cats: 2 };
   const ids = C.evaluate(scn('all-off'), [{ area: 'medical', name: 'Tablet', qty: 1, cap: 30, perDay: 1, location: 'Home' }], D, TODAY).needs.map(n => n.id);
-  assert.deepEqual(ids, ['water', 'food', 'fuel', 'power', 'pets']);
+  assert.deepEqual(ids, ['water', 'food', 'power', 'pets']);                // no stored-fuel need until a usable stove is named
+  const withStove = C.evaluate(scn('all-off'), [], { ...D, situation: { answers: { stove: 'yes', stoveWhere: 'balcony' } } }, TODAY).needs.map(n => n.id);
+  assert.deepEqual(withStove, ['water', 'food', 'fuel', 'power', 'pets']);
   assert.ok(C.evaluate(scn('all-off'), [], S, TODAY).needs.some(n => n.id === 'hygiene'));
 });
 
@@ -321,15 +400,17 @@ test('to do: dates are bucketed, checks only in their last days, put-off entries
 });
 
 test('situation: "not sure" becomes a job, and key questions wait for an answer', () => {
-  const f = SIT.findOuts({ tapInCut: 'dk', cooking: ['cylinder'], containersL: 40 }, {});
+  const f = SIT.findOuts({ tapInCut: 'dk', cooking: ['cylinder'], stove: 'no', containersL: 40 }, {});
   assert.deepEqual(f.map(x => x.key), ['find:tapInCut', 'find:treat']);
   assert.ok(f[0].unknown && /building management/.test(f[0].text));
   assert.ok(!f[1].unknown && f[1].text.startsWith('Answer: '));
   assert.equal(f[0].step, 2); assert.equal(f[1].step, 3);
-  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], containersL: 40 }, { treat: 'A still' }), []);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], stove: 'no', containersL: 40 }, { treat: 'A still' }), []);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], containersL: 40, treat: ['boil'] }, {}).map(x => x.key), ['find:stove']);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', cooking: ['cylinder'], hobNoMains: 'dk', stove: 'no', containersL: 40, treat: ['boil'] }, {}).map(x => x.key), ['find:hobNoMains']);
   // a follow-up question is a job only while it applies
-  assert.deepEqual(SIT.findOuts({ tapInCut: 'while', tapRun: 'dk', cooking: ['cylinder'], containersL: 0, treat: ['boil'] }, {}).map(x => x.key), ['find:tapRun']);
-  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', tapRun: 'dk', cooking: ['cylinder'], containersL: 0, treat: ['boil'] }, {}), []);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'while', tapRun: 'dk', cooking: ['cylinder'], stove: 'no', containersL: 0, treat: ['boil'] }, {}).map(x => x.key), ['find:tapRun']);
+  assert.deepEqual(SIT.findOuts({ tapInCut: 'yes', tapRun: 'dk', cooking: ['cylinder'], stove: 'no', containersL: 0, treat: ['boil'] }, {}), []);
   // "not sure" no longer doubles as a flag
   assert.deepEqual(SIT.flags({ tapInCut: 'dk' }), []);
   assert.equal(SIT.flags({ containersL: 0 })[0].key, 'flag:containersL:0');
@@ -450,6 +531,7 @@ test('live: an event starts from a scenario, counts its days, and looks ahead ov
   assert.equal(LV.daysLeft({ ...lv, used: { [D0]: T0 } }, D0), 6);                        // today's water is logged: count from tomorrow
   const scn = LV.scenario(lv, '2026-12-01');
   assert.equal(scn.days, 5); assert.equal(scn.tap, false); assert.equal(scn.real, true); assert.equal(scn.place, 'home');
+  near(LV.scenario({ ...lv, state: { ...lv.state, grid: false }, since: { ...lv.since, grid: T0 } }, D0, Date.parse(T0) + 36 * 3600e3).offFor, 1.5); assert.equal(LV.scenario(lv, D0, Date.parse(T0) + 36 * 3600e3).offFor, 0);
   assert.equal(LV.scenario(lv, '2026-12-20').days, 1);                                    // past the expected end: still plan a day ahead
   // live, the tap is as reported: power off with water still running needs no stock, whatever the building usually does
   const dark = LV.scenario({ ...lv, state: { tap: 'on', grid: false, shops: true } }, D0);
@@ -490,8 +572,14 @@ test('live: the steps follow what is working, and say how much', () => {
   assert.deepEqual(keys(liveOf(), { ...a, source: ['pool'] }), ['fill', 'heater', 'news', 'buy', 'fetch']);
   assert.deepEqual(keys(liveOf({ tap: false, tapState: 'unsafe' }), a), ['nodrink', 'boil', 'news']);          // boiling on the hob covers drinking
   assert.deepEqual(keys(liveOf({ tap: false, tapState: 'unsafe' }), { ...a, boilOk: 'no' }), ['nodrink', 'news', 'buy']);
-  assert.deepEqual(keys(liveOf({ tap: true, grid: false }), a), ['fill']);                                      // power off: the taps may stop
-  assert.deepEqual(keys(liveOf({ tap: true, grid: false }), { ...a, tapInCut: 'yes' }), []);
+  assert.deepEqual(keys(liveOf({ tap: true, grid: false }), a), ['fill', 'fridge', 'eatfresh']);               // power off: the taps may stop, the fridge is on a clock
+  assert.deepEqual(keys(liveOf({ tap: true, grid: false }), { ...a, tapInCut: 'yes' }), ['fridge', 'eatfresh']);
+  // cooking in a power cut follows how the household cooks
+  const dark = liveOf({ tap: true, grid: false }), cook = (ans) => LV.steps(dark, { answers: { tapInCut: 'yes', ...ans }, water: null, left: 3, heat: C.heatFor(LV.scenario(dark, D0), ans), clock: iso => iso.slice(11, 16) });
+  assert.deepEqual(cook({ cooking: ['electric'] }).map(x => x.key), ['fridge', 'eatfresh', 'nocook']);
+  assert.deepEqual(cook({ cooking: ['electric'], stove: 'yes', stoveWhere: 'balcony' }).map(x => x.key), ['fridge', 'eatfresh', 'stove']);
+  assert.deepEqual(cook({ cooking: ['cylinder'], hobNoMains: 'yes' }).map(x => x.key), ['fridge', 'eatfresh']);
+  assert.match(cook({ freezerFull: 'full' })[0].detail, /about 4 hours: until 05:00\. A full freezer holds for about 48 hours: until 01:00\./);    // started 01:00
   assert.deepEqual(keys(liveOf({ tap: true }), a), []);
   assert.equal(keys(liveOf(), a, '2026-12-10')[3], 'longer:7');
 });

@@ -8,8 +8,8 @@
 //   treatment  a portable filter, tablets, drops   makes that many litres of washing or source water safe
 //
 // Order of use.  Drinking: the tap if it is safe, then water you filled (it keeps for months, not years), then sealed
-// bottles down to the reserve, then treated water.  Washing: the tap even if unsafe, then washing stock, then a pool
-// or river, then drinking water the rest of the scenario does not need.
+// bottles down to the reserve, then treated water.  Washing: the tap even if unsafe, then a pool or river (what can be
+// replaced comes before what is stored), then washing stock, then drinking water the rest of the scenario does not need.
 
 const num = v => { if (v === null || v === undefined || v === '') return null; const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
 
@@ -35,9 +35,12 @@ export function washLitres(s, posture) {
  * items    water items within reach in this scenario
  * s        settings: adults, drinkL, drinkHotL, wash*L, reserveDays, petWaterEach
  * a        the questionnaire's answers (tapInCut, tapRun, heaterL, source, carryL, floor, homeType, boilOk, containersL, tubL, warning)
- * o        { pets: how many animals drink from this stock, target: days the scenario runs, posture?: override }
+ * o        { pets: how many animals drink from this stock, target: days the scenario runs, posture?: override,
+ *            boil?: litres that can be boiled (Infinity on a hob that works, a number on a stove's fuel, 0 with no way to boil).
+ *            Left out, it is Infinity when mains power is on and 0 otherwise. }
  *
- * Returns { needed, D, W, drinkDays, washDays, washCounted, stock, tap, hot, fill, posture }.
+ * Returns { needed, D, W, drinkDays, washDays, washCounted, stock, tap, hot, fill, posture, boiledL }.
+ * boiledL is the water boiled on limited fuel within the target days, so that fuel can be charged for it.
  * Days are Infinity when the water comes from something that does not run out.
  */
 export function plan(scn, items, s, a, o) {
@@ -67,7 +70,7 @@ export function plan(scn, items, s, a, o) {
   if (!away) stock.reserve = Math.min(stock.sealed, Math.max(0, num(s.reserveDays) ?? 1) * people * drink);
 
   const needed = !(state === 'on' && tap.stopsAfter === null);
-  const out = { needed, D, W, drinkDays: Infinity, washDays: Infinity, washCounted: false, stock, tap, hot, posture, fill: null };
+  const out = { needed, D, W, drinkDays: Infinity, washDays: Infinity, washCounted: false, stock, tap, hot, posture, fill: null, boiledL: 0 };
   if (!needed) return out;
 
   // Outside sources. A pool washes and nothing else. A river washes, and can be drunk once treated.
@@ -76,8 +79,10 @@ export function plan(scn, items, s, a, o) {
   // With the lifts out on an upper floor, outside water is limited to what can be carried up in a day.
   const upper = a.homeType !== 'landed' && a.floor !== 'ground';
   const carry = !scn.grid && upper ? Math.max(0, num(a.carryL) || 0) : Infinity;
-  // Boiling on the normal hob. It needs the kitchen to work, and the household to accept boiled water.
-  const boil = !away && !!scn.grid && a.boilOk !== 'no';
+  // Boiling: unlimited on a hob that works, limited by fuel on a portable stove, and only if the household accepts boiled water.
+  let boilLeft = a.boilOk === 'no' || away ? 0 : o.boil !== undefined ? Math.max(0, o.boil) : scn.grid ? Infinity : 0;
+  const hob = boilLeft === Infinity;
+  let boiled = 0;
 
   let sealed = stock.sealed - stock.reserve, filled = stock.filled + stock.heater, wash = stock.wash, treat = stock.treat;
   let dDays = D > 0 ? null : Infinity, wDays = W > 0 ? null : Infinity;
@@ -91,8 +96,8 @@ export function plan(scn, items, s, a, o) {
         const a2 = Math.min(need, sealed); sealed -= a2; need -= a2;
         if (a1 + a2 > 0) finite = true;
       }
-      if (need > 1e-9) {                                        // treated water
-        const cap = boil ? Infinity : treat;
+      if (need > 1e-9) {                                        // treated water: the unsafe tap, then a river, then washing stock
+        const cap = hob ? Infinity : treat + boilLeft;
         let got = 0;
         if (now === 'unsafe') got = Math.min(need, cap);
         else {
@@ -100,7 +105,11 @@ export function plan(scn, items, s, a, o) {
           const fromStock = Math.min(need - got, cap - got, wash);
           if (fromStock > 0) { wash -= fromStock; got += fromStock; finite = true; }
         }
-        if (!boil && got > 0) { treat -= got; finite = true; }
+        if (!hob && got > 0) {                                  // a filter or tablets first: fuel has other uses
+          const byItems = Math.min(got, treat), byFuel = got - byItems;
+          treat -= byItems; boilLeft -= byFuel; finite = true;
+          if (t < target) boiled += byFuel;
+        }
         need -= got;
       }
       if (need > 1e-9) dDays = t + (D - need) / D;
@@ -109,9 +118,10 @@ export function plan(scn, items, s, a, o) {
     if (wDays === null) {
       let need = now === 'off' ? W : 0, finite = false;
       if (need > 0) {
+        // What can be replaced is used before what is stored: a pool or river first, then washing stock.
+        if (pool || river) { const b2 = Math.min(need, carryLeft); carryLeft -= b2; need -= b2; }
         const b1 = Math.min(need, wash); wash -= b1; need -= b1;
         if (b1 > 0) finite = true;
-        if (need > 1e-9 && (pool || river)) { const b2 = Math.min(need, carryLeft); carryLeft -= b2; need -= b2; }
         if (need > 1e-9) {                                      // drinking water the rest of the scenario does not need
           const keep = D * Math.max(0, target - (t + 1));
           let spare = Math.max(0, sealed + filled - keep);
@@ -124,6 +134,7 @@ export function plan(scn, items, s, a, o) {
       else if (!finite && steady(t) && (carry === Infinity || dDays !== null)) wDays = Infinity;
     }
   }
+  out.boiledL = boiled;
   out.drinkDays = dDays === null ? HORIZON : dDays;
   out.washDays = wDays === null ? HORIZON : wDays;
   out.washCounted = W > 0 && !(state === 'unsafe' && tap.stopsAfter === null);

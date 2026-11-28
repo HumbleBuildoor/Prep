@@ -25,10 +25,11 @@ export const daysLeft = (live, today) => (num(live.days) || 0) - (dayNumber(live
  * The scenario the calculation runs on while live: what the household says is true right now, not what a rule predicts,
  * looking ahead over the days still expected (at least one).
  */
-export function scenario(live, today) {
-  const st = live.state;
+export function scenario(live, today, now) {
+  const st = live.state, t0 = Date.parse((live.since && live.since.grid) || live.startedAt);
+  // offFor: days the power has been off so far, so that what was in the fridge and freezer stops counting once it has spoiled.
   return { id: 'live', name: live.name, days: Math.max(1, daysLeft(live, today)), place: 'home', tap: st.tap === 'on', tapState: st.tap === 'unsafe' ? 'unsafe' : '',
-    grid: !!st.grid, shops: !!st.shops, ration: 'household', real: true };
+    grid: !!st.grid, shops: !!st.shops, ration: 'household', real: true, offFor: !st.grid && now && Number.isFinite(t0) ? Math.max(0, (now - t0) / 864e5) : 0 };
 }
 
 const canon = v => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x));
@@ -57,7 +58,8 @@ export function merge(a, b) {
 
 /**
  * What to do now, in the order to do it. Keys are stable, so a tick survives the list being worked out again.
- * c: { answers: the questionnaire, water: the water plan for the live scenario, left: days still expected }.
+ * c: { answers: the questionnaire, water: the water plan for the live scenario, left: days still expected,
+ *      heat: what there is to cook on (calc.heatFor), clock?: turns an ISO time into words, for the fridge and freezer deadlines }.
  * A step is { key, text, detail, act? }. act 'fill' means ticking it asks how much was filled.
  */
 export function steps(live, c) {
@@ -74,7 +76,18 @@ export function steps(live, c) {
   if (st.tap === 'off' && heater > 0) out.push({ key: 'heater', text: `Turn the water heater off. Its ${L(heater)} is drinking water`, detail: 'Let it cool before you drain it.' });
   if (st.tap === 'unsafe') {
     out.push({ key: 'nodrink', text: 'Tell everyone: do not drink from the tap or cook with it', detail: 'It is still fine for washing.' });
-    if (st.grid && a.boilOk !== 'no') out.push({ key: 'boil', text: 'Boil tap water for drinking: a rolling boil for 1 minute, then let it cool', detail: 'Use bottled water first if you have it. Boiling does not remove fuel or chemicals.' });
+    if ((c.heat ? c.heat.kitchen || c.heat.stove : st.grid) && a.boilOk !== 'no') out.push({ key: 'boil', text: 'Boil tap water for drinking: a rolling boil for 1 minute, then let it cool', detail: 'Use bottled water first if you have it. Boiling does not remove fuel or chemicals.' });
+  }
+  if (!st.grid) {
+    // Without power the fridge and freezer are on a clock, and cooking depends on what the household cooks on.
+    const full = a.freezerFull === 'full', t0 = Date.parse(live.since && live.since.grid ? live.since.grid : live.startedAt);
+    const by = h => (c.clock && Number.isFinite(t0) ? `: until ${c.clock(new Date(t0 + h * 3600e3).toISOString())}` : '');
+    out.push({ key: 'fridge', text: 'Keep the fridge and freezer shut', detail: `Fridge food is safe for about 4 hours${by(4)}. A ${full ? 'full freezer holds for about 48 hours' : 'freezer that is half full holds for about 24 hours'}${by(full ? 48 : 24)}.` });
+    out.push({ key: 'eatfresh', text: 'Eat from the fridge first, then the freezer as it thaws', detail: 'Once those times have passed, throw out what is left of the food that spoils.' });
+    const h = c.heat;
+    if (h && !h.kitchen) out.push(h.stove
+      ? { key: 'stove', text: 'Cook on the portable stove, on the balcony or beside a wide-open window', detail: 'Never in a closed room, because of carbon monoxide. Boiling drinking water comes before cooking.' }
+      : { key: 'nocook', text: 'There is no way to cook: eat food that needs no cooking', detail: h.owns ? 'You have a portable stove but nowhere ventilated to use it.' : 'Your hob does not work without power, and no portable stove is on record.' });
   }
   if (st.tap !== 'on') out.push({ key: 'news', text: 'Find out how long it will last', detail: 'Ask your water company or building management, then set the days on State.' });
 

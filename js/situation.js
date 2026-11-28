@@ -22,6 +22,13 @@ export const SECTIONS = [
     { id: 'tapRun', q: 'How long do the taps keep running after the power goes?', opts: [['once', 'They stop at once'], ['hours', 'A few hours'], ['day', 'About a day'], ['longer', 'Longer'], [DK[0], DK[1]]],
       when: a => a.tapInCut === 'while', find: 'Ask building management how long the taps run once the power is off.' },
     { id: 'cooking', q: 'How do you normally cook?', opts: [['mains', 'Piped gas'], ['cylinder', 'Gas cylinder'], ['electric', 'Electric or induction'], ['portable', 'Portable stove only']], multi: true },
+    { id: 'hobNoMains', q: 'Can your gas hob be lit when the mains power is off?', opts: [['yes', 'Yes'], ['no', 'No', 'Your gas hob does not light without mains power, so a power cut stops the kitchen. A portable stove is the fallback.'], [DK[0], DK[1]]],
+      when: a => [].concat(a.cooking || []).some(x => x === 'mains' || x === 'cylinder'), find: 'Find out from your hob’s manual whether it can be lit when the power is off.' },
+    { id: 'stove', q: 'Do you own a portable stove that takes the fuel you store?', opts: [['yes', 'Yes'], ['no', 'No', 'No portable stove. If your hob needs mains power, a power cut leaves only food that needs no cooking.']] },
+    { id: 'stoveWhere', q: 'Where would you use it?', opts: [['balcony', 'On a balcony'], ['window', 'Beside a wide-open window'], ['nowhere', 'Nowhere ventilated', 'Nowhere ventilated to use a stove, so cooking on it is not counted. A balcony or a wide-open window is the least it needs.']],
+      when: a => a.stove === 'yes' || [].concat(a.cooking || []).includes('portable') },
+    { id: 'fridgeDays', q: 'On a normal day, how many days of meals are in the fridge and freezer?', opts: [['none', 'None'], ['some', '1 to 2'], ['more', '3 to 5'], ['week', 'A week or more']] },
+    { id: 'freezerFull', q: 'How full is the freezer usually?', opts: [['full', 'Full'], ['half', 'Half or less']], when: a => !!a.fridgeDays && a.fridgeDays !== 'none' },
     { id: 'backup', q: 'What backup power do you have?', opts: [['none', 'None', 'No backup power at all. A power bank per phone is the first step.'], ['banks', 'Power banks'], ['station', 'Power station'], ['generator', 'Generator'], ['solar', 'Solar panel']], multi: true },
     { id: 'heat', q: 'Without power, can the home stay bearable?', opts: [['yes', 'Yes, windows and airflow'], ['hot', 'It gets very hot', 'The home gets very hot without power. Battery fans and extra drinking water belong on the list.'], [DK[0], DK[1]]], find: 'Switch the air-con and fans off for an afternoon to see how hot the home gets without power.' },
     { id: 'flood', q: 'Does your street or car park flood?', opts: [['never', 'Never'], ['sometimes', 'Sometimes'], ['often', 'Often', 'Flooding is common where you live. Decide in advance where the car goes when heavy rain is forecast.'], [DK[0], DK[1]]], find: 'Ask neighbours or management whether your street or car park floods.' },
@@ -124,7 +131,7 @@ export function flags(answers) {
 }
 
 // The answers that change the result most. Until they are given, answering them is a job in itself.
-export const KEY = ['tapInCut', 'cooking', 'containersL', 'treat'];
+export const KEY = ['tapInCut', 'cooking', 'stove', 'containersL', 'treat'];
 
 /** Jobs the questionnaire creates: every "not sure" is something to find out, and each key question still waits for an answer. */
 export function findOuts(answers, other) {

@@ -135,10 +135,35 @@ function need(id, name, lines, target, extra) {
   return Object.assign({ id, name, lines, days: limit ? limit.days : Infinity, limit, target }, extra || {});
 }
 
+/** Days of a scenario that one need covers: its own days while it is short, and at least the whole scenario once its own target is met. */
+export const cover = (n, target) => (n.days < n.target ? n.days : Math.max(n.days, target));
+
+/**
+ * What there is to cook on in a scenario, from how the household says it cooks.
+ *   kitchen: the normal hob works, so cooking and boiling are not limited by stored fuel.
+ *   stove:   a portable stove can be used: it is owned, and there is somewhere ventilated to stand it.
+ * Whatever has not been answered is taken as the worse case, and flagged (assumed).
+ */
+export function heatFor(scn, a) {
+  a = a || {};
+  if (scn.place === 'away') return { kitchen: false, stove: true, owns: true, assumed: false };     // on the move, whatever fuel is carried
+  const how = [].concat(a.cooking || []), gas = how.includes('mains') || how.includes('cylinder');
+  const owns = a.stove === 'yes' || how.includes('portable');
+  const stove = owns && (a.stoveWhere === 'balcony' || a.stoveWhere === 'window');
+  if (scn.grid) return { kitchen: true, stove, owns, assumed: false };
+  // Power is off. A gas hob still cooks if it lights without mains; an electric or induction one does not.
+  const kitchen = gas && a.hobNoMains === 'yes';
+  return { kitchen, stove, owns, assumed: !kitchen && (!how.length || (gas && a.hobNoMains !== 'no')) };
+}
+
+// Days of meals a household says its fridge and freezer hold on a normal day.
+const FRESH_DAYS = { none: 0, some: 1.5, more: 4, week: 7 };
+
 /**
  * Works out how many days one scenario is covered for, need by need.
- * scn: { days, place:'home'|'away', tap, tapState?:'unsafe', grid, shops, ration:'household'|'active', locations?, petsAlong? }
- * s.situation.answers (the questionnaire) feeds the water rules: see water.js.
+ * scn: { days, place:'home'|'away', tap, tapState?:'unsafe', grid, shops, ration:'household'|'active', locations?, petsAlong?, real? }
+ * s.situation.answers (the questionnaire) feeds the water and cooking rules: see water.js and heatFor.
+ * Each need carries its own target: food, fuel and pet food are only needed for the days the shops cannot be counted on.
  * labelOf(area, type) is optional and only used for display names of hygiene types.
  */
 export function evaluate(scn, items, s, today, labelOf) {
@@ -146,54 +171,76 @@ export function evaluate(scn, items, s, today, labelOf) {
   const dogs = Math.max(0, num(s.dogs) || 0), cats = Math.max(0, num(s.cats) || 0), pets = dogs + cats;
   const away = scn.place === 'away';
   const target = num(scn.days) || 0;
+  const a = (s.situation && s.situation.answers) || {};
   const inScope = items.filter(it => usable(it, scn, s, today));
   const by = area => inScope.filter(it => it.area === area);
-  const needFood = !scn.shops || away;
-  const kitchen = !!scn.grid && !away;                 // the normal kitchen works
+  // Open shops are not counted on at the start of an event, when everyone else is buying. Live, they are as reported.
+  const noShop = away || !scn.shops ? target : scn.real ? 0 : Math.min(target, Math.max(0, num(s.noResupplyDays) ?? 3));
+  const needFood = noShop > 0;
+  const heat = heatFor(scn, a);
   const petsIn = pets > 0 && (!away || scn.petsAlong !== false);
   let needs = [];
 
   const fuel = by('fuel');
   const fuelHave = stock(fuel);
   const flame = num(s.flameMinPerDay) || 0;
-  const fuelDays = flame > 0 ? fuelHave / flame : Infinity;
+  const minPerL = Math.max(0, num(s.boilMinPerL) ?? 4);
 
   // Water: drinking sets the days. Washing is counted beside it and never spends water the drinking needs.
+  // Fuel boils water before it cooks food, so the water plan is told how much the fuel in reach could boil.
   const w = by('water');
-  const wp = W.plan(scn, w, s, (s.situation && s.situation.answers) || {}, { pets: petsIn ? pets : 0, target });
+  const boil = heat.kitchen ? Infinity : heat.stove && !away && minPerL > 0 ? fuelHave / minPerL : 0;
+  const wo = { pets: petsIn ? pets : 0, target, boil };
+  const wp = W.plan(scn, w, s, a, wo);
   if (wp.needed) {
     const wl = (key, label, days, perDay, extra) => Object.assign({ key, label, have: Number.isFinite(days) ? days * perDay : Infinity, unit: 'L', perDay, days }, extra || {});
     const lines = [wl('water', 'Drinking water', wp.drinkDays, wp.D)];
     if (wp.washCounted) lines.push(wl('wash', 'Washing water', wp.washDays, wp.W, { soft: true }));
     needs.push(need('water', 'Water', lines, target, { logged: w.length > 0 || wp.drinkDays > 0, info: wp }));
   }
+  const boilMin = wp.needed ? wp.boiledL * minPerL : 0;          // flame spent making water safe, within the scenario
+  const cookFuel = Math.max(0, fuelHave - boilMin);
 
   if (needFood) {
     const D = adults * kcalFor(scn, s);
     const f = by('food');
     const sweetCap = num(s.sweetCap) || 0;
-    let oil = 0, sweet = 0, cook = 0, rest = 0, protein = 0, noKcal = 0;
+    let oil = 0, sweet = 0, cook = 0, rest = 0, protein = 0, cookProtein = 0, noKcal = 0;
     for (const it of f) {
       const q = num(it.qty) || 0, k = num(it.kcal);
       if (k === null) noKcal++;
-      const kc = q * (k || 0);
-      protein += q * (num(it.protein) || 0);
-      if (it.category && it.category === s.oilCategory) oil += kc;
-      else if (sweetCap > 0 && it.category && it.category === s.sweetCategory) sweet += kc;
-      else if (it.needsCooking) cook += kc;
-      else rest += kc;
+      const kc = q * (k || 0), pr = q * (num(it.protein) || 0);
+      if (it.category && it.category === s.oilCategory) { oil += kc; protein += pr; }
+      else if (sweetCap > 0 && it.category && it.category === s.sweetCategory) { sweet += kc; protein += pr; }
+      else if (it.needsCooking) { cook += kc; cookProtein += pr; }
+      else { rest += kc; protein += pr; }
     }
-    // Food that must be cooked only counts for as long as there is a way to cook it.
-    const cookUsable = (kitchen || !Number.isFinite(fuelDays)) ? cook : Math.min(cook, fuelDays * D);
-    const capped = applyCaps(rest + cookUsable, [{ have: oil, cap: num(s.oilCap) || 0 }, { have: sweet, cap: sweetCap }]);
+    // Food that must be cooked counts only for the days there is heat to cook it and water to cook it in.
+    const heatDays = heat.kitchen ? Infinity : heat.stove ? (flame > 0 ? cookFuel / flame : Infinity) : 0;
+    let waterDays = Infinity;
+    if (!away && wp.needed && wp.washCounted) {
+      // Bare minimum allows no cooking water. Above it, cooking shares the washing water, and a pool cannot stand in for that.
+      const pool = [].concat(a.source || []).includes('pool');
+      waterDays = wp.posture === 'bare' ? 0 : pool ? W.plan(scn, w, s, { ...a, source: [].concat(a.source || []).filter(x => x !== 'pool') }, wo).washDays : wp.washDays;
+    }
+    const cookDays = Math.min(heatDays, waterDays);
+    const cookUsable = Number.isFinite(cookDays) ? Math.min(cook, cookDays * D) : cook;
+    protein += cook > 0 ? cookProtein * (cookUsable / cook) : cookProtein;      // protein in food that cannot be cooked does not count either
+    // What is in the fridge and freezer: all of it with the power on, a day or two of it (cooked as it thaws) with the power off.
+    const est = away ? 0 : FRESH_DAYS[a.fridgeDays] || 0;
+    const freshDays = scn.grid ? est : heat.kitchen || heat.stove ? Math.max(0, Math.min(est, a.freezerFull === 'full' ? 2 : 1) - (num(scn.offFor) || 0)) : 0;
+    const fresh = freshDays * D;
+    const capped = applyCaps(rest + cookUsable + fresh, [{ have: oil, cap: num(s.oilCap) || 0 }, { have: sweet, cap: sweetCap }]);
     needs.push(need('food', 'Food', [
       line('kcal', 'Calories', capped.total, 'kcal', D),
       line('protein', 'Protein', protein, 'g', adults * (num(s.proteinPerDay) || 0), { essential: s.proteinLimits !== false }),
-    ], target, { logged: f.length > 0, info: { cook, cookUsable, oil, oilUsed: capped.used[0], sweet, sweetUsed: capped.used[1], noKcal, kitchen } }));
+    ], noShop, { logged: f.length > 0 || fresh > 0, info: { cook, cookUsable, oil, oilUsed: capped.used[0], sweet, sweetUsed: capped.used[1], noKcal, kitchen: heat.kitchen, heat, heatDays, waterDays, fresh, freshDays, posture: wp.posture } }));
   }
 
-  if (needFood && !kitchen && !away) {
-    needs.push(need('fuel', 'Cooking fuel', [line('fuel', 'Burn time', fuelHave, 'min', flame)], target, { logged: fuel.length > 0 }));
+  // Stored fuel is a need only where a portable stove is what cooks: boiling drinking water comes out of it first.
+  if (needFood && !heat.kitchen && heat.stove && !away) {
+    const perDay = flame + (noShop > 0 ? boilMin / Math.max(noShop, target) : 0);
+    needs.push(need('fuel', 'Cooking fuel', [line('fuel', 'Burn time', fuelHave, 'min', perDay)], noShop, { logged: fuel.length > 0, info: { boilMin: target > 0 ? boilMin / target : 0, flame } }));
   }
 
   if (!scn.grid || away) {
@@ -230,23 +277,25 @@ export function evaluate(scn, items, s, today, labelOf) {
     if (lines.length) needs.push(need('hygiene', 'Hygiene', lines, target, { logged: h.length > 0 }));
   }
 
-  if (petsIn && (!scn.shops || away)) {
+  if (petsIn && needFood) {
     const p = by('pets');
     const have = t => stock(p.filter(it => it.type === t));
     const lines = [];
     if (dogs > 0) lines.push(line('dogfood', 'Dog food', have('dogfood'), 'pet-days', dogs));
     if (cats > 0) lines.push(line('catfood', 'Cat food', have('catfood'), 'pet-days', cats));
-    needs.push(need('pets', 'Pets', lines, target, { logged: p.length > 0 }));
+    needs.push(need('pets', 'Pets', lines, noShop, { logged: p.length > 0 }));
   }
 
   if (Array.isArray(s.areas)) needs = needs.filter(n => s.areas.includes(n.id));   // areas switched off are not judged
 
+  // The limit is the need that fails first. One that lasts its own target (food until the shops can be counted on)
+  // is taken to last the scenario.
   let limiting = null;
-  for (const n of needs) if (!limiting || n.days < limiting.days) limiting = n;
-  const minDays = limiting ? limiting.days : Infinity;
+  for (const n of needs) if (!limiting || cover(n, target) < cover(limiting, target)) limiting = n;
+  const minDays = limiting ? cover(limiting, target) : Infinity;
   const ratio = target > 0 ? minDays / target : Infinity;
   const status = !needs.length || ratio >= 1 ? 'ok' : ratio >= 0.5 ? 'short' : 'bad';
-  return { needs, limiting, minDays, target, ratio, status };
+  return { needs, limiting, minDays, target, ratio, status, noShop };
 }
 
 /**
@@ -259,13 +308,13 @@ export function gaps(scenarios, items, s, today, labelOf) {
     const r = evaluate(scn, items, s, today, labelOf);
     for (const n of r.needs) {
       for (const l of n.lines) {
-        if (l.essential === false || !(l.days < r.target)) continue;
-        const short = r.target * l.perDay - l.have;
+        if (l.essential === false || !(l.days < n.target)) continue;
+        const short = n.target * l.perDay - l.have;
         const key = n.id + ':' + l.key;
         const g = out.get(key) || { key, need: n.id, needName: n.name, label: l.label, unit: l.unit, short: 0, worst: '', scenarios: [], soonest: Infinity, soonestIn: '', soonestTarget: 0, logged: n.logged !== false };
         g.scenarios.push(scn.name);
         if (short > g.short) { g.short = short; g.worst = scn.name; }
-        if (l.days < g.soonest) { g.soonest = l.days; g.soonestIn = scn.name; g.soonestTarget = r.target; }
+        if (l.days < g.soonest) { g.soonest = l.days; g.soonestIn = scn.name; g.soonestTarget = n.target; }
         out.set(key, g);
       }
     }
